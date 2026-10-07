@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP is permitted, and that is a deliberate decision rather than
+  an oversight.
+
+  The server JotIt syncs to is whatever the user runs at home: a Synology box,
+  a Nextcloud instance, a Raspberry Pi. On a home network those are almost
+  always reached over plain `http://` on a LAN address, with no certificate
+  anybody could obtain for `192.168.1.100`. Android 9 turned cleartext off by
+  default, and without this file every one of those users gets a sync that
+  fails with `CLEARTEXT communication not permitted` — an error that blames the
+  server for something the server never did.
+
+  What this does and does not cost, stated plainly:
+
+  * Anything on the user's own network can see the path of a note travelling
+    in cleartext. The password is sent in an HTTP Basic header, which is
+    base64, not encryption. That is true of every HTTP WebDAV server ever, and
+    blocking cleartext would not make it safer — it would only make the app
+    refuse to work.
+  * HTTPS is unaffected and is still preferred: nothing here downgrades a
+    request to `http`. Typing `https://` in the remote settings keeps TLS.
+
+  To tighten it, replace the base-config flag with a `<domain-config>` naming
+  the host that is actually yours. The address is not known at build time,
+  which is why it is not hard-coded.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

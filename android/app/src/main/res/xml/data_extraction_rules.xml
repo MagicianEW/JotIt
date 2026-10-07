@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ asks for both cloud backup and device-to-device transfer rules
+  separately. Backup is off for the reason in the manifest: the master key that
+  seals the WebDAV credentials is not bound to the Keystore yet, so backing up
+  the app data would ship both halves of the lock to one place.
+
+  Transfer to a new phone is left on, because that is a move, not a copy — the
+  key and what it seals stay on one device the whole time. A vault can be
+  rebuilt from the notes themselves; the sealed credentials and the PIN cannot,
+  so the user re-enters those once on the new phone. That is a much smaller
+  thing to ask than "do not back up my notes".
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="root" />
+    </device-transfer>
+</data-extraction-rules>

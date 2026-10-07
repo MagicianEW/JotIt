@@ -1,8 +1,36 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- WebDAV, and nothing else. Without this in *main* rather than *debug*
+         the app builds, installs, opens a note, and then fails every sync
+         with a socket error that looks like the server is down.
+         JotIt talks to one server that the user configures; it has no
+         analytics, no ads, and no other network use. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!--
+      Backup is off, on purpose, and this is the one Android decision here
+      that should be revisited rather than left forever.
+
+      What is in `.jotit/`: the PIN hash (PBKDF2, but still a verifier) and the
+      WebDAV credentials sealed with AES-256-GCM. What seals them, today, is a
+      master key stored in the same app data directory — it is not bound to the
+      Android Keystore yet. Backing the directory up therefore ships both
+      halves of the lock to the same place, which is strictly worse than
+      having either one alone.
+
+      When the key is bound to the Keystore, restoring the database without
+      the key is harmless and this can go back to `true`. Until then, a user's
+      notes do not reach Google's cloud backup, and the Settings screen shows
+      the exact vault path so syncing is the backup they have been given.
+    -->
+
     <application
-        android:label="jotit"
+        android:label="JotIt"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"
