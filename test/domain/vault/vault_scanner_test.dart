@@ -169,8 +169,73 @@ void main() {
       final afterSecond = await snapshot(db.db);
 
       expect(afterSecond, first);
-      expect(second.notesIndexed, 2);
+      // `notesIndexed` counts rows this pass *wrote*. The second pass reads
+      // every file, hashes it, finds the bytes identical to what the index
+      // already describes, and writes nothing — which is the whole point of
+      // the fast path and is what keeps startup inside §11.2's budget.
+      expect(second.notesUnchanged, 2);
+      expect(second.notesIndexed, 0);
       expect(second.duplicateUids, isEmpty);
+    });
+
+    test('a change on disk is never skipped by the fast path', () async {
+      // The fast path compares content hashes. A note edited between two
+      // passes must be re-indexed, or ADR-1 turns into a lie: the index would
+      // describe a version of the file that no longer exists, and nothing
+      // would ever notice.
+      await writeNote('notes/a.md', 'first body', uid: 'u-a', title: 'Alpha');
+      final db = await openDb();
+      addTearDown(db.close);
+      final scanner = VaultScanner(database: db.db, fileStore: store);
+      await scanner.reindex();
+
+      // Same byte length, so a size-based shortcut would miss it too.
+      await writeNote('notes/a.md', 'OTHER BODY', uid: 'u-a', title: 'Alpha');
+
+      final result = await scanner.reindex();
+      expect(result.notesUnchanged, 0);
+      expect(result.notesIndexed, 1);
+
+      final row = await db.db.query('notes',
+          where: 'path = ?', whereArgs: ['notes/a.md']);
+      expect(row.single['body'], contains('OTHER BODY'));
+    });
+
+    test('a file added while the app was closed is still indexed', () async {
+      await writeNote('notes/a.md', 'body', uid: 'u-a');
+      final db = await openDb();
+      addTearDown(db.close);
+      final scanner = VaultScanner(database: db.db, fileStore: store);
+      await scanner.reindex();
+
+      await writeNote('notes/b.md', 'brand new', uid: 'u-b');
+      final result = await scanner.reindex();
+
+      // The fast path is all-or-nothing: one new file means the whole vault
+      // goes down the full path, so nothing is reported as unchanged.
+      expect(result.notesUnchanged, 0);
+      expect(result.notesIndexed, 2);
+      final rows = await db.db.query('notes', where: 'is_deleted = 0');
+      expect(rows.length, 2);
+      expect(rows.map((r) => r['path']), containsAll(['notes/a.md', 'notes/b.md']));
+    });
+
+    test('a file deleted while the app was closed is reported missing',
+        () async {
+      await writeNote('notes/a.md', 'body', uid: 'u-a');
+      await writeNote('notes/b.md', 'body', uid: 'u-b');
+      final db = await openDb();
+      addTearDown(db.close);
+      final scanner = VaultScanner(database: db.db, fileStore: store);
+      await scanner.reindex();
+
+      File('${store.vaultRoot}${p.separator}notes${p.separator}b.md')
+          .deleteSync();
+      final result = await scanner.reindex();
+
+      expect(result.missingPaths, ['notes/b.md']);
+      expect(result.notesUnchanged, 0);
+      expect(result.notesIndexed, 1);
     });
   });
 

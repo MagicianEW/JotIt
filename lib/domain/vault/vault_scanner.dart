@@ -27,6 +27,7 @@ class ReindexResult {
   const ReindexResult({
     this.filesSeen = 0,
     this.notesIndexed = 0,
+    this.notesUnchanged = 0,
     this.attachmentsIndexed = 0,
     this.linksIndexed = 0,
     this.ambiguousLinks = 0,
@@ -43,7 +44,18 @@ class ReindexResult {
   });
 
   final int filesSeen;
+
+  /// Notes whose derived rows this pass actually wrote.
   final int notesIndexed;
+
+  /// Notes that were read, hashed, found byte-identical to what the index
+  /// already described, and therefore left alone.
+  ///
+  /// A non-zero value means the fast path ran and found the vault already in
+  /// sync. It is not a count of work skipped by guessing: every one of these
+  /// files was read and its SHA-256 compared.
+  final int notesUnchanged;
+
   final int attachmentsIndexed;
   final int linksIndexed;
   final int ambiguousLinks;
@@ -90,6 +102,7 @@ class ReindexResult {
 
   @override
   String toString() => 'ReindexResult(notes=$notesIndexed, '
+      'unchanged=$notesUnchanged, '
       'links=$linksIndexed, backfilled=${uidBackfilled.length}, '
       'duplicates=${duplicateUids.length}, missing=${missingPaths.length}, '
       'missingAttachments=${missingAttachments.length}, '
@@ -206,6 +219,21 @@ class VaultScanner {
         }
       }
     }
+
+    // Fast path — see [_alreadyMatchesDisk]. When the index already describes
+    // these exact bytes, all the writing below produces rows identical to the
+    // ones already there, and on a real vault that is the overwhelming
+    // majority of the work: measured on 1000 Chinese notes (1 MB), reading and
+    // hashing every file costs 165ms while the write pass costs 2.7s. §11.2
+    // budgets 1.5s from launch to editable, and `VaultSession.open` runs this
+    // on every start, so a vault a month old would not open in time.
+    final noop = await _alreadyMatchesDisk(
+      notes: files,
+      attachments: attachments,
+      skipped: skipped,
+      knownPaths: knownPaths,
+    );
+    if (noop != null) return noop;
 
     // Pass 1 — parse every note so the link index sees the whole vault before
     // a single link is resolved. Resolving against a half-built index is how
@@ -365,6 +393,85 @@ class VaultScanner {
       skipped: skipped,
       unreadable: unreadable,
       malformedFrontMatter: malformed,
+    );
+  }
+
+  /// True when every one of these files is already indexed under exactly these
+  /// bytes, and the index holds nothing else.
+  ///
+  /// The comparison is on the **content hash**, not on the modification time.
+  /// A mtime shortcut would be cheaper and is the obvious thing to write, but
+  /// it is wrong in a way that matters here: a sync engine rewriting identical
+  /// bytes, a `touch`, a backup tool restoring an unchanged copy — all move the
+  /// mtime without changing anything, and a mtime rule would re-index the
+  /// whole vault for them. More importantly it is wrong in the *other*
+  /// direction: two edits inside one timestamp tick, or an editor that
+  /// preserves mtime, would be missed, and the whole point of ADR-1 is that the
+  /// index cannot lag the disk. Reading the bytes costs a sixth of what writing
+  /// them does, so it is not even the expensive half.
+  ///
+  /// Returns the [ReindexResult] to hand back when nothing needs writing, or
+  /// null when any part of the vault disagrees and the full pass must run.
+  ///
+  /// Deliberately all-or-nothing. A partial fast path would have to resolve
+  /// links against a mix of freshly-parsed notes and rows read back from the
+  /// database, and a link resolved against a half-built index looks
+  /// authoritative while being wrong. If anything at all changed, the
+  /// behaviour is exactly what it was before this existed.
+  Future<ReindexResult?> _alreadyMatchesDisk({
+    required Map<String, _ScannedFile> notes,
+    required Map<String, _ScannedFile> attachments,
+    required List<String> skipped,
+    required Set<String>? knownPaths,
+  }) async {
+    // A vault whose index is empty, or a caller that brought remote paths
+    // that the disk scan has not accounted for, always takes the full path.
+    if (notes.isEmpty && attachments.isEmpty) return null;
+    if (knownPaths != null && knownPaths.isNotEmpty) return null;
+    if (skipped.any((s) => s.contains('not a note extension'))) return null;
+
+    final rows = await _db.query(
+      'notes',
+      columns: <String>['id', 'path', 'content_hash', 'is_deleted'],
+      where: 'is_deleted = 0',
+    );
+    if (rows.length != notes.length) return null;
+
+    final indexed = <String, String>{};
+    for (final r in rows) {
+      indexed[r['path']! as String] = r['content_hash']! as String;
+    }
+
+    for (final entry in notes.entries) {
+      final expected = indexed[entry.key];
+      // A note on disk that the index has never seen, or one whose bytes moved
+      // under us — either way the full pass is what makes the index true.
+      if (expected == null) return null;
+      if (expected != ContentHash.ofBytes(entry.value.bytes)) return null;
+    }
+    if (indexed.length != notes.length) return null;
+
+    // Attachments are part of the derived index too. Their rows carry a
+    // content hash as well, so the same argument applies.
+    final attachmentRows =
+        await _db.query('attachments', columns: <String>['path', 'content_hash']);
+    if (attachmentRows.length != attachments.length) return null;
+    final indexedAttachments = <String, String>{
+      for (final r in attachmentRows)
+        r['path']! as String: r['content_hash']! as String,
+    };
+    for (final entry in attachments.entries) {
+      final expected = indexedAttachments[entry.key];
+      if (expected == null) return null;
+      if (expected != ContentHash.ofBytes(entry.value.bytes)) return null;
+    }
+
+    return ReindexResult(
+      filesSeen: notes.length,
+      notesIndexed: 0,
+      attachmentsIndexed: 0,
+      notesUnchanged: notes.length,
+      linksIndexed: 0,
     );
   }
 
