@@ -26,6 +26,7 @@ class SyncBatchResult {
     this.deleted = const <String>[],
     this.conflicts = const <String>[],
     this.skipped = const <String>[],
+    this.preconditionFailed = const <String>[],
     this.error,
   });
 
@@ -40,6 +41,14 @@ class SyncBatchResult {
   /// Paths deliberately left alone this round.
   final List<String> skipped;
 
+  /// Paths the server refused with 412/409 (§5.3 row 10).
+  ///
+  /// Reported separately from [skipped] because "left alone on purpose" and
+  /// "the server says our base is stale" are opposite situations that happen
+  /// to share an empty output list. A path that 412s every round would
+  /// otherwise be invisible forever.
+  final List<String> preconditionFailed;
+
   final String? error;
 
   bool get isEmpty =>
@@ -53,7 +62,7 @@ class SyncBatchResult {
   @override
   String toString() => 'SyncBatchResult(down ${downloaded.length}, '
       'up ${uploaded.length}, del ${deleted.length}, '
-      'conflict ${conflicts.length})';
+      'conflict ${conflicts.length}, 412 ${preconditionFailed.length})';
 }
 
 /// One sync session (§5.2).
@@ -261,6 +270,9 @@ class SyncEngine {
     final conflicts = <String>[];
     final skipped = <String>[];
 
+    // 412/409 is tracked apart from `skipped` — see SyncBatchResult.
+    final preconditionFailed = <String>[];
+
     // Everything the matrix could have an opinion about: what the remote has,
     // what the base remembers, and **what only this device has**. Leaving the
     // local-only paths out is the bug that makes a brand new note invisible:
@@ -313,17 +325,25 @@ class SyncEngine {
       switch (outcome) {
         case _Outcome.downloaded:
           downloaded.add(path);
+          await meta.clearRetry(syncRootId, path);
         case _Outcome.uploaded:
           uploaded.add(path);
+          await meta.clearRetry(syncRootId, path);
         case _Outcome.deleted:
           deleted.add(path);
+          await meta.clearRetry(syncRootId, path);
         case _Outcome.conflicted:
           conflicts.add(path);
+          // The refusal that led here has been superseded: the path now waits
+          // on a person, and `conflict_state` is what the Settings page shows.
+          // Leaving "HTTP 412" on the row would report the same path in two
+          // different "needs attention" lists under two different meanings.
+          await meta.clearRetry(syncRootId, path);
           machine.apply(SyncEvent.conflictWritten);
         case _Outcome.skipped:
           skipped.add(path);
         case _Outcome.retryNextRound:
-          skipped.add(path);
+          preconditionFailed.add(path);
       }
     }
 
@@ -333,6 +353,7 @@ class SyncEngine {
       deleted: deleted,
       conflicts: conflicts,
       skipped: skipped,
+      preconditionFailed: preconditionFailed,
     );
   }
 
@@ -503,6 +524,17 @@ class SyncEngine {
         if (put.statusCode == 412 || put.statusCode == 409) {
           // §5.3 row 10: our base is stale. Re-classify next round rather than
           // retrying blindly against a token the server has moved past.
+          //
+          // The count is what stops that from being silent. A path whose base
+          // never catches up will 412 on every pass for as long as the vault
+          // exists, and an empty "skipped" list is indistinguishable from a
+          // vault that simply had nothing to do.
+          await meta.notePreconditionFailed(
+            syncRootId: syncRootId,
+            path: path,
+            error: 'HTTP ${put.statusCode}',
+            at: nowMs,
+          );
           return _Outcome.retryNextRound;
         }
         await meta.commitBase(
@@ -516,7 +548,23 @@ class SyncEngine {
         return _Outcome.uploaded;
 
       case SyncAction.deleteRemote:
-        await dav.delete(path, ifMatch: record?.baseEtag);
+        try {
+          await dav.delete(path, ifMatch: record?.baseEtag);
+        } on DavException catch (e) {
+          // A refused conditional DELETE is the same situation as a refused
+          // conditional PUT: our base moved under us. Row 11's delete never
+          // happened, so nothing is removed locally either.
+          if (e.statusCode == 412 || e.statusCode == 409) {
+            await meta.notePreconditionFailed(
+              syncRootId: syncRootId,
+              path: path,
+              error: 'HTTP ${e.statusCode} on DELETE',
+              at: nowMs,
+            );
+            return _Outcome.retryNextRound;
+          }
+          rethrow;
+        }
         await meta.remove(syncRootId, path);
         return _Outcome.deleted;
 
@@ -550,9 +598,6 @@ class SyncEngine {
     }
   }
 
-  /// Folds the round's outcome back into `sync_roots`: the CTag that lets the
-  /// next round skip the walk, and the backoff deadline that keeps a restart
-  /// from resetting the wait.
   /// Removes the local file and records the tombstone.
   ///
   /// Both halves are required. The file alone would be resurrected by the next
@@ -568,6 +613,9 @@ class SyncEngine {
     await notes.softDelete(path, at: at);
   }
 
+  /// Folds the round's outcome back into `sync_roots`: the CTag that lets the
+  /// next round skip the walk, and the backoff deadline that keeps a restart
+  /// from resetting the wait.
   Future<void> recordSuccess({
     required String syncRootId,
     required int nowMs,

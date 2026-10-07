@@ -8,7 +8,7 @@ library;
 
 import 'package:sqflite_common/sqlite_api.dart';
 
-const int kSchemaVersion = 2;
+const int kSchemaVersion = 3;
 
 /// One step from version [from] to `from + 1`.
 typedef Migration = void Function(DatabaseExecutor db);
@@ -16,6 +16,7 @@ typedef Migration = void Function(DatabaseExecutor db);
 final Map<int, Migration> _migrations = {
   0: _v0ToV1,
   1: _v1ToV2,
+  2: _v2ToV3,
 };
 
 /// Ordered list of migrations to apply when the database is at [from].
@@ -226,4 +227,15 @@ CREATE TABLE app_lock (
   biometric_on    INTEGER NOT NULL DEFAULT 0 CHECK (biometric_on IN (0, 1)),
   updated_at      INTEGER NOT NULL DEFAULT 0
 )''');
+}
+
+void _v2ToV3(DatabaseExecutor db) {
+  // ---- precondition failures (v3.0 §5.3 row 10) --------------------------
+  // A 412 is not an error the next round heals on its own. If the base stays
+  // stale and nothing counts the refusals, the same path can 412 on every pass
+  // forever with nothing on screen but an empty "skipped" list. The counter is
+  // per path and per root because that is the granularity at which the server
+  // rejects: the precondition is `If-Match: <this path's base_etag>`.
+  db.execute('ALTER TABLE sync_meta ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0');
+  db.execute('ALTER TABLE sync_meta ADD COLUMN last_error TEXT');
 }

@@ -44,6 +44,8 @@ class SyncMetaRecord {
     this.lastSyncedAt,
     this.conflictState = ConflictState.none,
     this.conflictCopyDir,
+    this.retryCount = 0,
+    this.lastError,
   });
 
   final String syncRootId;
@@ -74,6 +76,16 @@ class SyncMetaRecord {
   /// Directory under `_conflicts/` holding `local.md` / `remote.md`.
   final String? conflictCopyDir;
 
+  /// Consecutive refusals of this path's conditional request (§5.3 row 10).
+  ///
+  /// Reset by any successful exchange on the path. It is *not* a failure count
+  /// for the sync root — that one lives on `sync_roots.next_attempt_at` — and
+  /// not a count of conflicts.
+  final int retryCount;
+
+  /// Why the last exchange on this path was refused, verbatim.
+  final String? lastError;
+
   SyncMetaRecord copyWith({
     String? uid,
     String? baseEtag,
@@ -82,6 +94,8 @@ class SyncMetaRecord {
     int? lastSyncedAt,
     ConflictState? conflictState,
     String? conflictCopyDir,
+    int? retryCount,
+    String? lastError,
   }) =>
       SyncMetaRecord(
         syncRootId: syncRootId,
@@ -93,6 +107,8 @@ class SyncMetaRecord {
         lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
         conflictState: conflictState ?? this.conflictState,
         conflictCopyDir: conflictCopyDir ?? this.conflictCopyDir,
+        retryCount: retryCount ?? this.retryCount,
+        lastError: lastError ?? this.lastError,
       );
 
   Map<String, Object?> toMap() => {
@@ -105,6 +121,8 @@ class SyncMetaRecord {
         'last_synced_at': lastSyncedAt,
         'conflict_state': conflictState.wire,
         'conflict_copy_dir': conflictCopyDir,
+        'retry_count': retryCount,
+        'last_error': lastError,
       };
 
   static SyncMetaRecord fromRow(Map<String, Object?> row) => SyncMetaRecord(
@@ -117,6 +135,8 @@ class SyncMetaRecord {
         lastSyncedAt: row['last_synced_at'] as int?,
         conflictState: ConflictState.parse(row['conflict_state'] as String?),
         conflictCopyDir: row['conflict_copy_dir'] as String?,
+        retryCount: (row['retry_count'] as int?) ?? 0,
+        lastError: row['last_error'] as String?,
       );
 }
 
@@ -203,6 +223,67 @@ class SyncMetaStore {
     if (basePath != null) map['base_path'] = basePath;
     await _root.insert('sync_meta', map,
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// Records that the server refused this path's conditional request (§5.3
+  /// row 10) and bumps the per-path counter.
+  ///
+  /// The base is deliberately **not** moved. Writing the ETag the server just
+  /// rejected into `base_etag` would make the next pass classify the note as
+  /// "local changed, remote unchanged" and PUT it straight back into the same
+  /// 412 — and, worse, it would bless a remote body this device has never
+  /// merged. The stale base is the thing that forces the real classification.
+  ///
+  /// Returns the new count so the caller can escalate rather than loop.
+  Future<int> notePreconditionFailed({
+    required String syncRootId,
+    required String path,
+    required String error,
+    int? at,
+  }) async {
+    final root = _root;
+    await root.rawUpdate(
+      '''
+UPDATE sync_meta
+   SET retry_count = retry_count + 1,
+       last_error = ?,
+       last_synced_at = ?
+ WHERE sync_root_id = ? AND path = ?''',
+      <Object?>[error, at, syncRootId, path],
+    );
+    final rows = await root.query('sync_meta',
+        where: 'sync_root_id = ? AND path = ?',
+        whereArgs: [syncRootId, path],
+        limit: 1);
+    if (rows.isEmpty) return 0;
+    return (rows.first['retry_count'] as int?) ?? 0;
+  }
+
+  /// Clears the refusal state after this path exchanged successfully.
+  ///
+  /// Called on every outcome that actually moved the base, so a path that 412s
+  /// twice and then syncs shows a clean record rather than a permanent scar.
+  Future<void> clearRetry(String syncRootId, String path) async {
+    await _root.update(
+      'sync_meta',
+      <String, Object?>{'retry_count': 0, 'last_error': null},
+      where: 'sync_root_id = ? AND path = ?',
+      whereArgs: [syncRootId, path],
+    );
+  }
+
+  /// Paths the server is currently refusing, worst first.
+  ///
+  /// Backs the Settings "needs attention" list. Without it a path that 412s
+  /// every round is indistinguishable from a path that was simply unchanged.
+  Future<List<SyncMetaRecord>> failing(String syncRootId) async {
+    final rows = await _root.query(
+      'sync_meta',
+      where: 'sync_root_id = ? AND retry_count > 0',
+      whereArgs: [syncRootId],
+      orderBy: 'retry_count DESC, path ASC',
+    );
+    return rows.map(SyncMetaRecord.fromRow).toList();
   }
 
   /// Records that copies were written and the user still has to choose.

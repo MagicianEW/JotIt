@@ -135,6 +135,7 @@ class DavClient {
     Map<String, String>? headers,
     List<int>? body,
     Duration? timeoutOverride,
+    Set<int> statusCodesAsResults = const <int>{},
   }) async {
     final request = http.Request(method, uri)
       ..headers.addAll(_auth)
@@ -161,7 +162,15 @@ class DavClient {
           method: method, uri: uri, reason: 'transport failure', cause: e);
     }
 
-    if (response.statusCode >= 400) {
+    // A status in [statusCodesAsResults] is handed back instead of thrown.
+    //
+    // 412 and 409 are answers, not accidents: they are how a server says "your
+    // base is stale" or "that path is taken", which §5.3 row 10 then turns
+    // into a reclassification. Throwing them turned the engine's
+    // `statusCode == 412` branch into code that cannot run — the branch was
+    // covered by a unit test on the classifier and unreachable in production.
+    if (response.statusCode >= 400 &&
+        !statusCodesAsResults.contains(response.statusCode)) {
       throw DavException(
         method: method,
         uri: uri,
@@ -351,7 +360,13 @@ class DavClient {
     }
 
     final response = await _send('PUT', uri,
-        headers: headers, body: bytes, timeoutOverride: const Duration(minutes: 2));
+        headers: headers,
+        body: bytes,
+        timeoutOverride: const Duration(minutes: 2),
+        // Returned, not thrown: the caller has to be able to tell "the server
+        // refused this write because its base moved" (row 10) apart from "the
+        // write failed" and act on it.
+        statusCodesAsResults: const <int>{409, 412});
 
     return DavPutResult(
       statusCode: response.statusCode,

@@ -156,12 +156,12 @@ void main() {
       final first = await seed('a.md', _note);
       await client.put('a.md', utf8.encode('${_note}second'));
 
-      await expectLater(
-        client.put('a.md', utf8.encode('${_note}third'),
-            condition: DavIfMatch(first.etag!)),
-        throwsA(isA<DavException>()
-            .having((e) => e.isPreconditionFailed, 'isPreconditionFailed', isTrue)),
-      );
+      // 412 comes back as a status, not as an exception. Throwing it is what
+      // made §5.3 row 10 unreachable: the engine's branch existed and the
+      // exception unwound past it before it could run.
+      final result = await client.put('a.md', utf8.encode('${_note}third'),
+          condition: DavIfMatch(first.etag!));
+      expect(result.statusCode, 412);
       // The losing writer must still be able to tell it lost.
       expect(utf8.decode((await client.get('a.md'))!), '${_note}second');
     });
@@ -219,12 +219,12 @@ void main() {
     test('creating an existing file is refused, so two devices cannot both win',
         () async {
       await seed('taken.md', _note);
-      await expectLater(
-        client.put('taken.md', utf8.encode('${_note}mine'),
-            condition: const DavIfAbsent()),
-        throwsA(isA<DavException>()
-            .having((e) => e.statusCode, 'statusCode', 412)),
-      );
+      final result = await client.put('taken.md', utf8.encode('${_note}mine'),
+          condition: const DavIfAbsent());
+      expect(result.statusCode, 412,
+          reason: 'If-None-Match: * on an existing resource is a 412, and it '
+              'is returned so the caller can classify it as row 10');
+      expect(utf8.decode((await client.get('taken.md'))!), _note);
     });
   });
 

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/core/vault_paths.dart';
 import 'package:jotit/data/dav/dav_capabilities.dart';
 import 'package:jotit/data/dav/dav_client.dart';
+import 'package:jotit/data/dav/dav_multistatus.dart';
 import 'package:jotit/data/db/jotit_database.dart';
 import 'package:jotit/data/db/note_dao.dart';
 import 'package:jotit/data/db/sync_meta_store.dart';
@@ -112,6 +113,33 @@ void main() {
 
   String note(String uid, String title, String body) =>
       '---\nuid: $uid\ntitle: $title\n---\n\n$body\n';
+
+  /// Rebuilds the engine with a client that rewrites [path] the first time a
+  /// note body is fetched.
+  ///
+  /// This is the only seam that lands the "other device" inside the exact
+  /// window §5.3 row 10 describes: the PROPFIND walk has already recorded an
+  /// ETag, and the PUT is about to be sent against it. Seeding the change
+  /// *before* `run()` does not produce a 412 at all — the snapshot sees it and
+  /// the note is classified as a genuine divergence (row 9), which is a
+  /// different code path with a different, and correct, answer.
+  SyncEngine engineThatMutatesOnRead({
+    required String path,
+    required List<int> bytes,
+  }) {
+    late final DavClient racer = _MutateOnFirstGet(
+      inner: dav.client(),
+      onFirstGet: () => dav.seedRemote(path, bytes),
+    );
+    return SyncEngine(
+      dav: racer,
+      files: files,
+      notes: notes,
+      meta: meta,
+      roots: roots,
+      vaultRoot: vault.path,
+    );
+  }
 
   group('first round', () {
     test('uploads a local note the server has never seen', () async {
@@ -251,6 +279,155 @@ void main() {
       expect(utf8.decode((await dav.readRemote('notes/a.md'))!),
           contains('remote won'),
           reason: 'the server content must survive untouched');
+    });
+  });
+
+  group('precondition failure (matrix row 10)', () {
+    test('a 412 is reclassified next round instead of being retried blind',
+        () async {
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+
+      await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+
+      // The remote moves *after* the walk recorded its ETag.
+      engine = engineThatMutatesOnRead(
+        path: 'notes/a.md',
+        bytes: utf8.encode(note('u-a', 'A', 'other device won')),
+      );
+      final result = await run();
+
+      expect(result.preconditionFailed, contains('notes/a.md'),
+          reason: 'the server refused our If-Match, so this path was not '
+              'uploaded and must be reported as refused');
+      expect(result.uploaded, isNot(contains('notes/a.md')));
+      expect(utf8.decode((await dav.readRemote('notes/a.md'))!),
+          contains('other device won'),
+          reason: 'the refused write must not have landed');
+    });
+
+    test('the refusal is counted on the path, not swallowed', () async {
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+
+      engine = engineThatMutatesOnRead(
+        path: 'notes/a.md',
+        bytes: utf8.encode(note('u-a', 'A', 'other device won')),
+      );
+      await run();
+
+      final record = await meta.byPath(rootId, 'notes/a.md');
+      expect(record, isNotNull);
+      expect(record!.retryCount, 1);
+      expect(record.lastError, contains('412'));
+    });
+
+    test('one refused path does not abandon the rest of the round', () async {
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await dav.seedRemote('notes/b.md', utf8.encode(note('u-b', 'B', 'v1')));
+      await run();
+
+      await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+      await writeLocal('notes/b.md', 'local edit', uid: 'u-b', title: 'B');
+
+      // Only notes/a.md is raced. Before the transport layer was taught to
+      // return 412 instead of throwing it, this single refusal escaped as a
+      // DavException and abandoned the whole batch — notes/b.md stayed
+      // un-uploaded and the round reported an error rather than a result.
+      engine = SyncEngine(
+        dav: _MutateOnFirstGet(
+          inner: dav.client(),
+          onFirstGet: () async {
+            final listing = await dav.client().propfind('notes/', depth: 1);
+            if (listing.resources.any((r) => r.path.endsWith('b.md'))) {
+              await dav.seedRemote(
+                  'notes/a.md', utf8.encode(note('u-a', 'A', 'other device won')));
+            }
+          },
+        ),
+        files: files,
+        notes: notes,
+        meta: meta,
+        roots: roots,
+        vaultRoot: vault.path,
+      );
+      final result = await run();
+
+      expect(result.preconditionFailed, contains('notes/a.md'));
+      expect(result.uploaded, contains('notes/b.md'),
+          reason: 'a refusal on one path must not stop the others');
+      expect(result.error, isNull);
+      expect(utf8.decode((await dav.readRemote('notes/b.md'))!),
+          contains('local edit'));
+    });
+
+    test('the refusal count survives a restart', () async {
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+
+      engine = engineThatMutatesOnRead(
+        path: 'notes/a.md',
+        bytes: utf8.encode(note('u-a', 'A', 'other device won')),
+      );
+      await run();
+      expect((await meta.byPath(rootId, 'notes/a.md'))!.retryCount, 1);
+
+      // A count that lives in the engine instance resets on restart, which is
+      // the same shape of bug as the PIN backoff P2-18 was about.
+      final afterRestart = SyncMetaStore(db.db);
+      expect((await afterRestart.byPath(rootId, 'notes/a.md'))!.retryCount, 1);
+      expect(await afterRestart.failing(rootId), hasLength(1));
+      expect((await afterRestart.failing(rootId)).single.path, 'notes/a.md');
+    });
+
+    test('the stale base is not overwritten by the rejected ETag', () async {
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      final goodBase = (await meta.byPath(rootId, 'notes/a.md'))!.baseEtag;
+
+      await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+      engine = engineThatMutatesOnRead(
+        path: 'notes/a.md',
+        bytes: utf8.encode(note('u-a', 'A', 'other device won')),
+      );
+      await run();
+
+      // Writing the refused ETag into base_etag would make the next pass see
+      // "local changed, remote unchanged" and PUT into the same 412 forever —
+      // and it would bless a body this device has never merged.
+      expect((await meta.byPath(rootId, 'notes/a.md'))!.baseEtag, goodBase);
+    });
+
+    test('a path that syncs again clears its refusal', () async {
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+
+      engine = engineThatMutatesOnRead(
+        path: 'notes/a.md',
+        bytes: utf8.encode(note('u-a', 'A', 'other device won')),
+      );
+      await run();
+      expect((await meta.byPath(rootId, 'notes/a.md'))!.retryCount, 1);
+
+      // The real divergence surfaces on the next round, which is exactly what
+      // row 10 is asking for, and it resolves into a conflict.
+      engine = SyncEngine(
+        dav: dav.client(),
+        files: files,
+        notes: notes,
+        meta: meta,
+        roots: roots,
+        vaultRoot: vault.path,
+      );
+      final resolved = await run();
+
+      expect(resolved.conflicts, contains('notes/a.md'),
+          reason: 'reclassifying next round must actually reach row 9');
+      expect((await meta.byPath(rootId, 'notes/a.md'))!.lastError, isNull,
+          reason: 'a path that exchanged successfully carries no stale refusal');
     });
   });
 
@@ -497,6 +674,66 @@ DavCapabilities noCtagProfile() => const DavCapabilities(
       supportsIfMatch: true,
       supportsIfNoneMatch: true,
     );
+
+/// Runs [onFirstGet] the first time a note body is read, then behaves exactly
+/// like the client it wraps.
+///
+/// The engine reads every candidate body through `get` while classifying, so
+/// that is the narrowest place where "the remote changed after our snapshot"
+/// can be staged without a sleep, a timer, or a race the test does not
+/// control.
+class _MutateOnFirstGet extends DavClient {
+  _MutateOnFirstGet({required DavClient inner, required this.onFirstGet})
+      : _inner = inner,
+        super(
+          baseUri: inner.baseUri,
+          username: inner.username,
+          password: inner.password,
+          capabilities: inner.capabilities,
+        );
+
+  final DavClient _inner;
+  final Future<void> Function() onFirstGet;
+  bool _fired = false;
+
+  @override
+  Future<List<int>?> get(String path) async {
+    if (!_fired) {
+      _fired = true;
+      await onFirstGet();
+    }
+    return _inner.get(path);
+  }
+
+  @override
+  Future<DavListing> propfind(String path, {int depth = 1}) =>
+      _inner.propfind(path, depth: depth);
+
+  @override
+  Future<DavResource?> stat(String path) => _inner.stat(path);
+
+  @override
+  Future<DavListing?> listCollection(String path) =>
+      _inner.listCollection(path);
+
+  @override
+  Future<DavPutResult> put(
+    String path,
+    List<int> bytes, {
+    DavCondition condition = const DavUnconditional(),
+  }) =>
+      _inner.put(path, bytes, condition: condition);
+
+  @override
+  Future<bool> delete(String path, {String? ifMatch}) =>
+      _inner.delete(path, ifMatch: ifMatch);
+
+  @override
+  Future<DavCapabilities> probe() => _inner.probe();
+
+  @override
+  Future<void> close() => _inner.close();
+}
 
 Future<List<int>?> _side(String vaultRoot, String dir, String name) async {
   final f = File(p.join(VaultPaths.conflictsRoot(vaultRoot), dir, name));
