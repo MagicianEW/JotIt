@@ -8,13 +8,14 @@ library;
 
 import 'package:sqflite_common/sqlite_api.dart';
 
-const int kSchemaVersion = 1;
+const int kSchemaVersion = 2;
 
 /// One step from version [from] to `from + 1`.
 typedef Migration = void Function(DatabaseExecutor db);
 
 final Map<int, Migration> _migrations = {
   0: _v0ToV1,
+  1: _v1ToV2,
 };
 
 /// Ordered list of migrations to apply when the database is at [from].
@@ -205,4 +206,24 @@ CREATE TRIGGER notes_fts_au AFTER UPDATE ON notes BEGIN
   INSERT INTO notes_fts(rowid, uid, path, title, body)
   VALUES (new.rowid, new.id, new.path, new.title, new.body);
 END''');
+}
+
+void _v1ToV2(DatabaseExecutor db) {
+  // ---- app lock (v3.0 §8.3) ---------------------------------------------
+  // The whole point of this table is that the lockout survives a restart.
+  // A backoff kept in memory resets the moment the process dies, which is
+  // exactly what a person brute-forcing a PIN wants: kill, retry, repeat.
+  //
+  // One row, enforced by a CHECK rather than by convention.
+  db.execute('''
+CREATE TABLE app_lock (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  pin_hash        TEXT    NOT NULL,                    -- PBKDF2-HMAC-SHA256, hex
+  salt            TEXT    NOT NULL,                    -- 16 random bytes, hex
+  iterations      INTEGER NOT NULL,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until    INTEGER NOT NULL DEFAULT 0,          -- epoch ms
+  biometric_on    INTEGER NOT NULL DEFAULT 0 CHECK (biometric_on IN (0, 1)),
+  updated_at      INTEGER NOT NULL DEFAULT 0
+)''');
 }
