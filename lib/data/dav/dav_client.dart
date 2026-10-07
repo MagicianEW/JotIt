@@ -392,15 +392,11 @@ class DavClient {
       'Destination': to.toString(),
       'Overwrite': overwrite ? 'T' : 'F',
     };
-    try {
-      await _send('MOVE', from, headers: headers);
-    } on DavException catch (e) {
-      // A 412/409 here means somebody else moved or created the target in
-      // the meantime. That is a real collision, not a transport failure, and
-      // the decision matrix resolves it — so it is rethrown rather than
-      // silently retried.
-      rethrow;
-    }
+    // A 412/409 here means somebody else moved or created the target in the
+    // meantime. That is a real collision, not a transport failure, and the
+    // decision matrix resolves it — so the exception propagates unchanged
+    // rather than being retried or swallowed here.
+    await _send('MOVE', from, headers: headers);
   }
 
   Future<void> close() async {

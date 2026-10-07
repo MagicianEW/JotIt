@@ -51,6 +51,7 @@ CREATE TABLE notes (
 )''');
   db.execute('CREATE INDEX idx_notes_deleted ON notes(is_deleted)');
   db.execute('CREATE INDEX idx_notes_updated ON notes(updated_at DESC)');
+  db.execute('CREATE INDEX idx_notes_syncedat ON notes(synced_at)');
 
   // ---- links ------------------------------------------------------------
   // target_note_id is nullable on purpose: a link to a note that does not
@@ -120,6 +121,11 @@ CREATE TABLE sync_roots (
   capabilities     TEXT    NOT NULL DEFAULT '{}',     -- JSON, ADR-8 negotiation
   enabled          INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   last_sync_at     INTEGER,
+  -- Backoff lives here rather than in memory so a restart cannot reset it.
+  -- §5.2 makes `next_attempt_at` the thing that makes `delay = 30s x 2^n`
+  -- survive a crash; without this column a process that dies mid-backoff
+  -- comes back and hammers a server that is already refusing it.
+  next_attempt_at  INTEGER NOT NULL DEFAULT 0,
   last_error       TEXT,
   created_at       INTEGER NOT NULL DEFAULT 0
 )''');
@@ -132,6 +138,7 @@ CREATE TABLE sync_meta (
   base_etag         TEXT,
   base_content_hash TEXT,
   base_path         TEXT,
+  last_synced_at    INTEGER,                          -- §7.3 shows this as "conflict time"
   conflict_state    TEXT NOT NULL DEFAULT 'none'
       CHECK (conflict_state IN ('none','local_wins','remote_wins','conflict','pending_resolution')),
   conflict_copy_dir TEXT,
@@ -143,7 +150,7 @@ CREATE TABLE sync_meta (
 
   db.execute('''
 CREATE TABLE pending_ops (
-  id              INTEGER PRIMARY KEY,
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
   sync_root_id    TEXT    NOT NULL REFERENCES sync_roots(id) ON DELETE CASCADE,
   op_type         TEXT    NOT NULL
       CHECK (op_type IN ('create','update','delete','rename','conflict_resolve')),
@@ -161,6 +168,13 @@ CREATE TABLE pending_ops (
 )''');
   db.execute('''
 CREATE INDEX idx_pending_ops_ready ON pending_ops(sync_root_id, state, next_attempt_at)
+''');
+  // Every one of the five coalescing rules in §5.4 looks a queue up by target
+  // path before deciding whether to merge, fold or append. Without this index
+  // every enqueue is a full table scan of a table that grows by one row per
+  // offline edit.
+  db.execute('''
+CREATE INDEX idx_pending_ops_target ON pending_ops(sync_root_id, target_path, state)
 ''');
 
   // ---- full-text search (ADR-3) ----------------------------------------

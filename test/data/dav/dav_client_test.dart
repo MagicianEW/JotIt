@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -96,7 +95,7 @@ class DavHarness {
       }
     }
     await harness.dispose();
-    throw StateError('WebDAV test server did not come up on port $port\n${logs}');
+    throw StateError('WebDAV test server did not come up on port $port\n$logs');
   }
 
   Future<void> dispose() async {

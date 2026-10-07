@@ -44,7 +44,7 @@ void main() {
   // assertions are therefore DAV-root relative ("notes/a.md"), never
   // collection relative ("a.md") — the client compares them against paths it
   // derives from `sync_meta`, so the two must never be confused.
-  const _rootUri = 'http://h/dav/';
+  const rootUri = 'http://h/dav/';
 
   group('namespace handling', () {
     // The bug this guards: a parser that matches the *prefixed* name works
@@ -73,7 +73,7 @@ void main() {
     bodies.forEach((style, body) {
       test('parses a file entry written with $style', () {
         final listing = DavMultistatusParser.parse(body,
-            davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+            davRoot: Uri.parse(rootUri), queriedPath: 'notes');
         final file = listing.byPath('notes/a.md');
         expect(file, isNotNull, reason: 'style: $style');
         expect(file!.etag, '"abc"');
@@ -89,21 +89,21 @@ void main() {
     test('absolute URL', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: 'http://h/dav/notes/a.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a.md'), isNotNull);
     });
 
     test('absolute path', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a.md'), isNotNull);
     });
 
     test('relative to the queried collection', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: 'a.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a.md'), isNotNull);
     });
 
@@ -113,7 +113,7 @@ void main() {
               href: '/dav/notes/',
               resourcetype: '<resourcetype><collection/></resourcetype>',
               ctag: '"tag1"')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.self?.path, 'notes');
       expect(listing.self?.ctag, '"tag1"');
       expect(listing.self?.isCollection, isTrue);
@@ -125,7 +125,7 @@ void main() {
               href: '/dav/',
               resourcetype: '<resourcetype><collection/></resourcetype>',
               ctag: '"rt"')),
-          davRoot: Uri.parse(_rootUri), queriedPath: '');
+          davRoot: Uri.parse(rootUri), queriedPath: '');
       expect(listing.self?.path, '');
       expect(listing.collectionCtag, '"rt"');
     });
@@ -137,7 +137,7 @@ void main() {
       // answer. `stat()` depends on naming it correctly.
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/同步/引擎.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes/同步/引擎.md');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes/同步/引擎.md');
       expect(listing.resources, hasLength(1));
       expect(listing.byPath('notes/同步/引擎.md'), isNotNull);
       expect(listing.children, isEmpty);
@@ -155,14 +155,14 @@ void main() {
       final encoded = Uri.encodeComponent(name);
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/$encoded')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/$name'), isNotNull);
     });
 
     test('decodes a space in a filename', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/my%20note.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/my note.md'), isNotNull);
     });
 
@@ -173,7 +173,7 @@ void main() {
       expect(DavMultistatusParser.normalizePath('notes/a%2Fb.md'), 'notes/a/b.md');
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a%2Fb.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a/b.md'), isNotNull);
     });
 
@@ -186,14 +186,14 @@ void main() {
     test('is kept verbatim with its quotes', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a.md', etag: '"2f-1a1b2c"')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a.md')?.etag, '"2f-1a1b2c"');
     });
 
     test('recognises a weak etag', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a.md', etag: 'W/"weak"')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       final r = listing.byPath('notes/a.md')!;
       expect(r.isWeakEtag, isTrue);
       expect(r.strongForm, '"weak"');
@@ -203,7 +203,7 @@ void main() {
     test('a strong etag is not reported weak', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a.md')),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a.md')!.isWeakEtag, isFalse);
       expect(listing.byPath('notes/a.md')!.strongForm, '"abc"');
     });
@@ -222,7 +222,7 @@ void main() {
           '<status>HTTP/1.1 200 OK</status></propstat>'
           '</response>');
       final listing = DavMultistatusParser.parse(body,
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       final r = listing.byPath('notes/a.md')!;
       expect(r.etag, isNull);
       expect(r.missingProps, containsAll(<String>['getetag', 'getctag']));
@@ -233,7 +233,7 @@ void main() {
     test('a resource with no etag still lists', () {
       final listing = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a.md', omitEtag: true)),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.byPath('notes/a.md'), isNotNull);
       expect(listing.byPath('notes/a.md')!.etag, isNull);
     });
@@ -249,7 +249,7 @@ void main() {
             resourcetype: '<resourcetype><collection/></resourcetype>') +
         response(href: '/dav/notes/b.md', etag: '"b2"'));
     final listing = DavMultistatusParser.parse(body,
-        davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+        davRoot: Uri.parse(rootUri), queriedPath: 'notes');
 
     test('children excludes the collection itself', () {
       expect(listing.children.map((r) => r.path),
@@ -266,7 +266,7 @@ void main() {
     test('content length is parsed when present', () {
       final withLength = DavMultistatusParser.parse(
           multistatus(response(href: '/dav/notes/a.md', length: 412)),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(withLength.byPath('notes/a.md')!.contentLength, 412);
     });
 
@@ -280,14 +280,14 @@ void main() {
     test('invalid XML raises FormatException', () {
       expect(
         () => DavMultistatusParser.parse('<multistatus><response>',
-            davRoot: Uri.parse(_rootUri), queriedPath: 'notes'),
+            davRoot: Uri.parse(rootUri), queriedPath: 'notes'),
         throwsA(isA<FormatException>()),
       );
     });
 
     test('an empty body parses to nothing rather than throwing', () {
       final listing = DavMultistatusParser.parse(
-          multistatus(''), davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          multistatus(''), davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.resources, isEmpty);
       expect(listing.children, isEmpty);
     });
@@ -295,7 +295,7 @@ void main() {
     test('a response with no href is skipped', () {
       final listing = DavMultistatusParser.parse(
           multistatus('<response><propstat/></response>'),
-          davRoot: Uri.parse(_rootUri), queriedPath: 'notes');
+          davRoot: Uri.parse(rootUri), queriedPath: 'notes');
       expect(listing.resources, isEmpty);
     });
   });

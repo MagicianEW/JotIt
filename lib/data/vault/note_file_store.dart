@@ -31,11 +31,10 @@ class NoteFileStore {
   String? absolutePathFor(String notePath) {
     final norm = VaultPaths.normalizeRelative(notePath);
     if (norm == null || !VaultPaths.isInsideNotes(norm)) return null;
-    // `norm` is always `/`-separated by `normalizeRelative`, which rejects a
-    // backslash outright, so `split` here can only ever break on a real path
-    // separator. Handing it a platform separator would split nothing and
-    // produce one absurdly long segment.
-    return p.joinAll(p.split(norm));
+    // `joinAll` takes a single Iterable — `joinAll(root, parts)` is not a
+    // two-argument call, and dropping `vaultRoot` to satisfy the signature
+    // silently turns every path relative to the process CWD.
+    return p.joinAll([vaultRoot, ...p.split(norm)]);
   }
 
   /// The `notes/`-prefixed vault path for an absolute file path, or null when

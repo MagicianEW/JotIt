@@ -295,11 +295,14 @@ class DavMultistatusParser {
         .join('/');
   }
 
-  /// RFC 1123 / RFC 850 / asctime, in that order of likelihood.
+  /// Parses an HTTP-date (RFC 1123 / RFC 850 / asctime) as UTC.
+  ///
+  /// `HttpDate.parse` returns null for anything it does not recognise rather
+  /// than throwing, so a malformed `getlastmodified` degrades to "no timestamp"
+  /// instead of taking down a listing.
   static DateTime? parseHttpDate(String? raw) {
     if (raw == null || raw.isEmpty) return null;
-    final parsed = HttpDate.parse(raw);
-    return parsed == null ? null : parsed.toUtc();
+    return HttpDate.parse(raw)?.toUtc();
   }
 
   static Iterable<XmlElement> _byLocalName(XmlNode root, String local) =>

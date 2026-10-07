@@ -36,6 +36,7 @@ class ReindexResult {
     this.duplicateUids = const <String>[],
     this.restoredFromDisk = const <String>[],
     this.missingPaths = const <String>[],
+    this.missingAttachments = const <String>[],
     this.skipped = const <String>[],
     this.unreadable = const <String>[],
     this.malformedFrontMatter = const <String>[],
@@ -63,6 +64,15 @@ class ReindexResult {
   /// [Reindex] on why that call belongs to the sync engine.
   final List<String> missingPaths;
 
+  /// Attachment rows whose file is no longer on disk.
+  ///
+  /// §4.4 is explicit that these are reported and kept: the metadata is the
+  /// only record that the note ever referenced that file, and deleting it
+  /// turns "this attachment is missing" into "this note never had one".
+  /// The sync engine — which knows what should be on the remote — decides
+  /// whether the deletion is real.
+  final List<String> missingAttachments;
+
   /// Files deliberately not indexed, with the reason.
   final List<String> skipped;
 
@@ -75,12 +85,14 @@ class ReindexResult {
       duplicateUids.isNotEmpty ||
       unreadable.isNotEmpty ||
       malformedFrontMatter.isNotEmpty ||
-      missingPaths.isNotEmpty;
+      missingPaths.isNotEmpty ||
+      missingAttachments.isNotEmpty;
 
   @override
   String toString() => 'ReindexResult(notes=$notesIndexed, '
       'links=$linksIndexed, backfilled=${uidBackfilled.length}, '
       'duplicates=${duplicateUids.length}, missing=${missingPaths.length}, '
+      'missingAttachments=${missingAttachments.length}, '
       'skipped=${skipped.length}, unreadable=${unreadable.length})';
 }
 
@@ -265,9 +277,18 @@ class VaultScanner {
     // Pass 2 — write. One transaction for the whole pass: a crash halfway
     // through must not leave the index describing a vault that does not exist.
     final dao = NoteDao(_db);
+    late final List<String> missingAttachments;
     await dao.runInTransaction((txn) async {
       final tnotes = NoteDao.on(txn);
 
+      // 2a — every note row, before any link row.
+      //
+      // `links.target_note_id` is a real foreign key, so a note that links to
+      // a note whose path happens to sort *later* (`a.md` -> `b.md`) would fail
+      // the constraint: the target row does not exist yet. Deferring all link
+      // writes to a second sweep makes the ordering irrelevant, and the sweep
+      // still lands in this one transaction so the index is never half-built.
+      final writtenPaths = <String>[];
       for (final path in parsed.keys) {
         final entry = parsed[path]!;
         final uid = entry.parsed.uid!;
@@ -289,6 +310,14 @@ class VaultScanner {
           isDeleted: false,
         ));
         indexedPaths.add(path);
+        writtenPaths.add(path);
+      }
+
+      // 2b — derived rows that reference note ids. Safe now that every
+      // `notes` row in this transaction exists.
+      for (final path in writtenPaths) {
+        final entry = parsed[path]!;
+        final uid = entry.parsed.uid!;
 
         final counts = await _rebuildLinks(txn, path, uid, entry, index);
         linksIndexed += counts.total;
@@ -300,7 +329,7 @@ class VaultScanner {
         await _rebuildAttachments(txn, path, uid, entry, attachments);
       }
 
-      await _syncAttachments(txn, attachments);
+      missingAttachments = await _reportMissingAttachments(txn, attachments);
     });
 
     // Anything indexed but absent from disk. Reported, never deleted here.
@@ -332,6 +361,7 @@ class VaultScanner {
       duplicateUids: duplicates,
       restoredFromDisk: restored,
       missingPaths: missing,
+      missingAttachments: missingAttachments,
       skipped: skipped,
       unreadable: unreadable,
       malformedFrontMatter: malformed,
@@ -554,15 +584,23 @@ class VaultScanner {
     }
   }
 
-  Future<void> _syncAttachments(
+  /// Reports attachment rows whose file is gone, and deletes nothing.
+  ///
+  /// §4.4: "文件缺失时记录警告，不删除元数据". The metadata row is the only
+  /// remaining evidence that the note ever referenced that file; deleting it
+  /// would turn "this attachment is missing" into "this note never had one",
+  /// which is a claim the scanner is not in a position to make.
+  Future<List<String>> _reportMissingAttachments(
       DatabaseExecutor txn, Map<String, _ScannedFile> attachments) async {
     final rows = await txn.query('attachments', columns: <String>['id', 'path']);
     final present = attachments.keys.toSet();
+    final missing = <String>[];
     for (final row in rows) {
       final path = row['path']! as String;
-      if (present.contains(path)) continue;
-      await txn.delete('attachments', where: 'id = ?', whereArgs: <Object?>[row['id']]);
+      if (!present.contains(path)) missing.add(path);
     }
+    missing.sort();
+    return missing;
   }
 
   static String _mimeFor(String path) {

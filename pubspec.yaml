@@ -47,6 +47,7 @@ dependencies:
   intl: ^0.20.3
   xml: ^7.1.0
   meta: ^1.19.0
+  sqflite_common: ^2.5.13+1
 
 dev_dependencies:
   flutter_test:
