@@ -43,6 +43,7 @@ dependencies:
   http: ^1.6.0
   uuid: ^4.6.0
   riverpod: ^3.4.3
+  flutter_riverpod: ^3.4.3
   collection: ^1.19.1
   intl: ^0.20.3
   xml: ^7.1.0
