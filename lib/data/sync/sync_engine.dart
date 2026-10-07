@@ -17,6 +17,7 @@ import '../../domain/sync/conflict_writer.dart';
 import '../../domain/sync/decision_matrix.dart';
 import '../../domain/sync/remote_snapshot.dart';
 import '../../domain/sync/sync_session.dart';
+import '../../domain/vault/note_mover.dart';
 import '../vault/note_file_store.dart';
 
 /// What one session did.
@@ -100,7 +101,8 @@ class SyncEngine {
     this.queue,
     required this.vaultRoot,
     this.random,
-  });
+    NoteMover? mover,
+  }) : mover = mover ?? NoteMover(vaultRoot: vaultRoot);
 
   final DavClient dav;
   final NoteFileStore files;
@@ -112,6 +114,11 @@ class SyncEngine {
   /// Jitter source for the backoff window. Injected so a test can pin both
   /// ends of the range instead of asserting a random number was plausible.
   final Random? random;
+
+  /// Carries `attachments/` folders when a note is renamed by another device
+  /// (v3.0 §9.3 rule 4). Injected so a test can drive a collision without
+  /// staging megabytes.
+  final NoteMover mover;
 
   final SyncStateMachine machine = SyncStateMachine();
 
@@ -605,6 +612,69 @@ class SyncEngine {
     return bytes == null ? null : ContentHash.ofBytes(bytes);
   }
 
+  /// Puts an attachment at its new path and removes it from the old one.
+  ///
+  /// Written as one unit rather than as "let the next round notice" because
+  /// §5.5 makes a path an identity: until both halves happen, the server holds
+  /// two copies of an immutable file, and any other device that syncs in
+  /// between downloads the stale one back as a duplicate.
+  ///
+  /// `If-None-Match: *` on the create, for the same reason it is used in
+  /// [_syncAttachment]: this path is immutable, so if something is already
+  /// there it is not this file being overwritten, and overwriting it would be
+  /// exactly the silent overwrite C3 forbids.
+  Future<void> _relocateAttachment({
+    required String oldPath,
+    required String newPath,
+    required String syncRootId,
+    required int nowMs,
+  }) async {
+    final bytes = await files.readBytesIfPresent(newPath);
+    if (bytes == null) return;
+
+    final condition =
+        _conditionFor(action: SyncAction.uploadCreate, baseEtag: null);
+    var put = await dav.put(newPath, bytes,
+        condition: condition, contentType: mimeTypeFor(newPath));
+    if (put.statusCode == 409) {
+      await dav.ensureCollection(_parentOf(newPath));
+      put = await dav.put(newPath, bytes,
+          condition: condition, contentType: mimeTypeFor(newPath));
+    }
+
+    if (put.statusCode == 201 || put.statusCode == 204) {
+      await meta.commitBase(
+        syncRootId: syncRootId,
+        path: newPath,
+        uid: null,
+        baseEtag: put.etag ?? await _etagAfterWrite(newPath),
+        baseContentHash: ContentHash.ofBytes(bytes),
+        at: nowMs,
+      );
+    } else if (put.statusCode != 412) {
+      // 412: someone already has a file at the new path. Left alone and
+      // reported through the same channel as any other refused precondition —
+      // it is a fact about the vault, not something to resolve by force.
+      await meta.notePreconditionFailed(
+        syncRootId: syncRootId,
+        path: newPath,
+        error: 'HTTP ${put.statusCode} while moving $oldPath',
+        at: nowMs,
+      );
+      return;
+    }
+
+    // The new copy is in place either way, so the old one is now redundant.
+    // A delete that fails leaves litter rather than loss, and the next round
+    // sees the old path with no local file and no note pointing at it.
+    try {
+      await dav.delete(oldPath);
+      await meta.remove(syncRootId, oldPath);
+    } on DavException {
+      // Already gone counts as success inside `DavClient.delete`.
+    }
+  }
+
   Future<SyncObservation> _observe({
     required String path,
     required RemoteEntry? remote,
@@ -720,6 +790,29 @@ class SyncEngine {
             if (await to.exists()) await to.delete();
             await from.rename(to.path);
             await meta.remove(syncRootId, knownBasePath);
+            // §9.3 rule 4. Renaming the file alone leaves this device with a
+            // note whose link points at an `attachments/` folder that stayed
+            // behind — a note that reads perfectly and shows a broken image,
+            // with nothing anywhere reporting a problem. Doing it after the
+            // file moves rather than before is deliberate: the move is what
+            // creates the situation.
+            final carried = await mover.moveAttachments(
+              fromNotePath: knownBasePath,
+              toNotePath: path,
+            );
+            // And finish the move on the server, in the same round. Leaving
+            // the upload to "the next round" would mean the path set — which
+            // is fixed before the rename happens — never contained the new
+            // path, so a single click of 立即同步 would move the picture
+            // locally and leave the other device still showing a broken one.
+            for (final entry in carried.relocations.entries) {
+              await _relocateAttachment(
+                oldPath: entry.key,
+                newPath: entry.value,
+                syncRootId: syncRootId,
+                nowMs: nowMs,
+              );
+            }
           }
         }
         // The identity comes from the *remote* copy. Taking the local base

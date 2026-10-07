@@ -119,6 +119,31 @@ class DavHarness {
     return await file.exists() ? file.readAsBytes() : null;
   }
 
+  /// Removes a file straight out of the server's storage.
+  ///
+  /// Staging a rename takes two operations, and doing the second one over HTTP
+  /// would be testing `DavClient.delete` while pretending to test sync.
+  Future<void> removeRemote(String davRelativePath) async {
+    final file = File(p.join(root.path, p.joinAll(davRelativePath.split('/'))));
+    if (await file.exists()) await file.delete();
+  }
+
+  /// Moves a file inside the server's storage, creating the new parent.
+  ///
+  /// This is how a second device's rename is staged: the note appears at its
+  /// new path and disappears from its old one, which is the only signal the
+  /// engine has that a rename happened (it detects them by identity, §5.3
+  /// row 3, not by any rename record).
+  Future<void> moveRemote(String from, String to) async {
+    final source = File(p.join(root.path, p.joinAll(from.split('/'))));
+    final target = File(p.join(root.path, p.joinAll(to.split('/'))));
+    if (!await source.exists()) {
+      throw StateError('cannot move $from: the server does not have it');
+    }
+    await target.parent.create(recursive: true);
+    await source.rename(target.path);
+  }
+
   Future<bool> remoteExists(String davRelativePath) async =>
       File(p.join(root.path, p.joinAll(davRelativePath.split('/')))).existsSync();
 

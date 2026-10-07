@@ -115,6 +115,11 @@ void main() {
     now += 1000;
     final result = await engine.run(syncRootId: rootId, nowMs: now);
     await engine.recordSuccess(syncRootId: rootId, nowMs: now);
+    // The real app reindexes after every round that changed the vault, and
+    // that is what makes a moved attachment visible to the next round: the
+    // `attachments` table is the sync engine's only view of which files
+    // belong to the vault.
+    await rescan();
     return result;
   }
 
@@ -256,5 +261,70 @@ void main() {
         reason: 'the remote copy is left exactly as it was found');
     expect(await files.readBytesIfPresent(attachmentPath), png,
         reason: 'and so is the local one');
+  });
+
+  group('v3.0 §9.3 rule 4: the folder moves with the note', () {
+    const nestedNote = 'notes/projects/jotit/design.md';
+    const nestedLink = '![[attachments/6f1a.png]]';
+    const nestedAttachment = 'notes/projects/jotit/attachments/6f1a.png';
+
+    Future<void> seedNested() async {
+      await writeNote(nestedNote, '---\nuid: u-move\n---\n\n$nestedLink\n',
+          uid: 'u-move');
+      await writeAttachment(nestedAttachment, png);
+      await run();
+    }
+
+    test('moving a note up a level takes its attachments with it', () async {
+      await seedNested();
+
+      // The other device moved the note one level up. §5.3 finds renames by
+      // identity, so that is all it does on the wire.
+      await dav.moveRemote(nestedNote, 'notes/design.md');
+
+      final result = await run();
+
+      expect(result.error, isNull);
+      expect(await files.readBytesIfPresent('notes/attachments/6f1a.png'),
+          isNotNull,
+          reason: '§9.3 rule 4: the attachments folder travels with the note, '
+              'or the note arrives with a dangling link to a folder that is '
+              'still sitting where it used to be');
+      expect(await files.readBytesIfPresent(nestedAttachment), isNull,
+          reason: 'and it must not be left behind as an orphan');
+    });
+
+    test('the link still points at the picture afterwards', () async {
+      await seedNested();
+      await dav.moveRemote(nestedNote, 'notes/design.md');
+      await run();
+
+      final moved = await files.readBytesIfPresent('notes/design.md');
+      expect(moved, isNotNull);
+      // Same relative spelling, because the attachment moved with the note
+      // and they stayed at the same distance. Had only the note moved, the
+      // link would still read `attachments/…` while the folder sat at
+      // `notes/projects/jotit/attachments/` — a picture that renders broken
+      // on the one device that just received the rename.
+      expect(utf8.decode(moved!), contains('![[attachments/6f1a.png]]'));
+    });
+
+    test('the move happens on the server too, not just on disk', () async {
+      // A local move that leaves the old copy on the server is not a move: §5.5
+      // treats a path as an identity, so that copy is a second immutable file
+      // that another device would download back as a phantom duplicate.
+      await seedNested();
+      await dav.moveRemote(nestedNote, 'notes/design.md');
+
+      await run();
+
+      expect(await dav.remoteExists(nestedAttachment), isFalse,
+          reason: 'the attachment was carried to a new path; the old one must '
+              'not linger as a duplicate');
+      expect(await dav.remoteExists('notes/attachments/6f1a.png'), isTrue,
+          reason: 'and the new one has to be there, or the note on the other '
+              'device shows a broken image');
+      expect(await dav.readRemote('notes/attachments/6f1a.png'), png);
+    });
   });
 }
