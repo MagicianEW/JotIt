@@ -128,18 +128,32 @@ abstract final class VaultPaths {
   /// Build the relative link text that should be written into a note when an
   /// attachment is inserted. Always normalised relative to the note's own
   /// directory so the note stays portable if the folder moves.
+  ///
+  /// Both operands are put in the **same frame** first — both stripped of
+  /// `notes/` — because the two arrive in different ones: [notePath] is
+  /// vault-relative by convention, and mixing a `notes/`-relative `from` with
+  /// a vault-relative `to` does not produce a wrong answer so much as a
+  /// plausible one: a note at `notes/a.md` came out linking
+  /// `notes/attachments/x.png`, which resolves to `notes/notes/attachments/x.png`
+  /// and silently finds nothing.
   static String relativeLinkFromNote({
     required String notePath,
     required String targetVaultPath,
   }) {
     final noteKey = stripNotesPrefix(notePath);
     if (noteKey == null) return targetVaultPath;
+    final targetKey = stripNotesPrefix(targetVaultPath);
+    // Outside the notes tree: not something an attachment ever is, and the
+    // caller is expected to have refused it already (§9.3 rule 3). Handing the
+    // path back untouched keeps the failure visible rather than inventing a
+    // relative path that happens to look fine.
+    if (targetKey == null) return targetVaultPath;
+
     final dir = _posixDirname(noteKey);
-    final relative = p.posix.relative(
-      targetVaultPath,
+    return p.posix.relative(
+      targetKey,
       from: dir.isEmpty ? '.' : dir,
     );
-    return relative;
   }
 
   /// Attachments live in an `attachments/` folder beside the note (v3.0 §9.3),

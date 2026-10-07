@@ -19,6 +19,7 @@ import '../data/search/note_search.dart';
 import '../data/sync/sync_engine.dart';
 import '../data/vault/note_file_store.dart';
 import '../domain/entities/front_matter_patcher.dart';
+import '../domain/vault/attachment_writer.dart';
 import '../domain/vault/vault_scanner.dart';
 import 'app_lock.dart';
 import 'credential_cipher.dart';
@@ -43,6 +44,7 @@ class VaultSession {
     required this.lock,
     required this.cipher,
     required this.screenSecurity,
+    required this.attachments,
   });
 
   final String vaultRoot;
@@ -65,6 +67,9 @@ class VaultSession {
   /// Android `FLAG_SECURE`, driven by whether a PIN exists. See
   /// [ScreenSecurity] for why it is bound to the lock rather than always on.
   final ScreenSecurity screenSecurity;
+
+  /// Copies files into the vault as attachments (v3.0 §9.3).
+  final AttachmentWriter attachments;
 
   Database get db => database.db;
 
@@ -103,6 +108,7 @@ class VaultSession {
         return Directory(p.join(support.path, 'JotIt'));
       }),
       screenSecurity: screenSecurity ?? ScreenSecurity(),
+      attachments: AttachmentWriter(vaultRoot: vaultRoot),
     );
     await session.reindex();
     return session;
@@ -123,6 +129,25 @@ class VaultSession {
       (await locator.resolve()).path;
   Future<ReindexResult> reindex() =>
       VaultScanner(database: db, fileStore: files).reindex();
+
+  /// Inserts a file into the vault as an attachment of [notePath] (v3.0 §9.3)
+  /// and reindexes so the new file is known immediately.
+  ///
+  /// The reindex is not optional tidiness: without it the attachment has no
+  /// row, and the sync engine — which deliberately only pushes files a note
+  /// actually references — would not transfer it until some later scan
+  /// happened to notice. "I inserted a picture and it never synced" with
+  /// nothing wrong on screen is the exact failure this whole feature exists to
+  /// avoid.
+  Future<AttachmentInsertion> insertAttachment({
+    required String notePath,
+    required String sourcePath,
+  }) async {
+    final insertion =
+        await attachments.attach(notePath: notePath, sourcePath: sourcePath);
+    await reindex();
+    return insertion;
+  }
 
   /// Paths the settings screen shows so the user can find their data.
   String get databasePath => p.join(VaultPaths.appRoot(vaultRoot), 'jotit.db');
