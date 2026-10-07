@@ -306,4 +306,58 @@ void main() {
       expect(DavMultistatusParser.normalizePath(''), '');
     });
   });
+
+  group('parseHttpDate', () {
+    // `HttpDate.parse` throws rather than returning null, so the tolerance is
+    // explicit. One malformed `getlastmodified` must not take down a whole
+    // listing — the engine reads a null mtime as "unknown", never "changed".
+    test('parses RFC 1123 as UTC', () {
+      expect(
+        DavMultistatusParser.parseHttpDate('Wed, 07 Oct 2026 09:59:49 GMT'),
+        DateTime.utc(2026, 10, 7, 9, 59, 49),
+      );
+    });
+
+    test('RFC 7231 permits only a literal GMT, so +0200 is malformed', () {
+      // HTTP dates never carry a numeric offset. Returning null beats
+      // guessing a zone the header never stated — a wrong "last modified"
+      // is a spurious change, and a spurious change is an upload.
+      expect(
+        DavMultistatusParser.parseHttpDate('Wed, 07 Oct 2026 11:59:49 +0200'),
+        isNull,
+      );
+    });
+
+    test('accepts RFC 850 and asctime forms', () {
+      expect(DavMultistatusParser.parseHttpDate(
+              'Wednesday, 07-Oct-26 09:59:49 GMT'),
+          isNotNull);
+      expect(DavMultistatusParser.parseHttpDate(
+              'Wed Oct  7 09:59:49 2026'),
+          isNotNull);
+    });
+
+    test('a malformed date is null, not an exception', () {
+      for (final bad in ['', '   ', 'not a date', '2026-10-07', '0']) {
+        expect(DavMultistatusParser.parseHttpDate(bad), isNull, reason: bad);
+      }
+      expect(DavMultistatusParser.parseHttpDate(null), isNull);
+    });
+
+    test('a malformed date does not lose the resource it belongs to', () {
+      final body = multistatus(
+        '<response><href>/dav/notes/a.md</href><propstat><prop>'
+        '<getetag>"abc"</getetag>'
+        '<getlastmodified>garbage</getlastmodified>'
+        '</prop><status>HTTP/1.1 200 OK</status></propstat></response>',
+      );
+      final listing = DavMultistatusParser.parse(
+          body, davRoot: Uri.parse(rootUri), queriedPath: 'notes');
+      expect(listing.resources.length, 1);
+      expect(listing.resources.single.path, 'notes/a.md');
+      expect(listing.resources.single.lastModified, isNull);
+      expect(listing.resources.single.etag, isNotNull,
+          reason: 'the etag is what change detection actually needs');
+    });
+  });
 }

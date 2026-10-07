@@ -112,8 +112,14 @@ class LinkIndex {
 /// conflict-safety story rests on, so they are tested as a table rather than
 /// exercised through a database.
 abstract final class LinkResolver {
+  /// A URL scheme or a protocol-relative reference.
+  ///
+  /// RFC 3986 requires a scheme to be at least two characters, and the `+`
+  /// rather than `*` here is load-bearing: `[[C:\notes\x.md]]` is a path on
+  /// the user's own disk, and classifying it as a URL would hand a Windows
+  /// path to the browser handler.
   static final RegExp _externalScheme =
-      RegExp(r'^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)');
+      RegExp(r'^(?:[a-zA-Z][a-zA-Z0-9+.-]+:|//)');
 
   /// Resolves [link], found in the note at [sourcePath] (`notes/`-prefixed).
   static LinkResolution resolve(
@@ -129,19 +135,24 @@ abstract final class LinkResolver {
       return const LinkResolution(method: LinkMethod.dangling);
     }
 
-    if (_externalScheme.hasMatch(rawTarget)) {
-      return LinkResolution(
-        method: LinkMethod.external,
-        targetPath: rawTarget,
-      );
-    }
-
-    // Step 1 — explicit identity.
-    final uidMatch =
-        RegExp(r'^uid:([0-9a-fA-F-]{32,36})$').firstMatch(rawTarget);
-    if (uidMatch != null) {
-      final uid = uidMatch.group(1)!.toLowerCase();
-      final hit = index.uidToPath[uid];
+    // Step 1 — explicit identity, tested *before* the external-scheme check.
+    // `uid:` is itself scheme-shaped, so a generic scheme test placed above
+    // this line swallows every `[[uid:...]]` link and silently downgrades the
+    // only unambiguous form to a browser link. The whole of ADR-2 rests on
+    // this branch being reachable.
+    //
+    // The whole `uid:` namespace is reserved here rather than only the
+    // uuid-shaped part of it: a malformed `uid:` link is a broken internal
+    // reference, and handing `uid:typo` to the browser as a URL is never the
+    // right answer.
+    final uidLink =
+        RegExp(r'^uid:(.*)$', caseSensitive: false).firstMatch(rawTarget);
+    if (uidLink != null) {
+      final value = uidLink.group(1)!.trim();
+      final uid = RegExp(r'^[0-9a-fA-F-]{32,36}$').hasMatch(value)
+          ? value.toLowerCase()
+          : null;
+      final hit = uid == null ? null : index.uidToPath[uid];
       if (hit != null) {
         return LinkResolution(
           method: LinkMethod.byUid,
@@ -150,6 +161,13 @@ abstract final class LinkResolver {
         );
       }
       return const LinkResolution(method: LinkMethod.dangling);
+    }
+
+    if (_externalScheme.hasMatch(rawTarget)) {
+      return LinkResolution(
+        method: LinkMethod.external,
+        targetPath: rawTarget,
+      );
     }
 
     final decoded = _decode(rawTarget);
@@ -230,12 +248,14 @@ abstract final class LinkResolver {
   }
 
   /// True when the target names a file rather than a note.
+  ///
+  /// The extension must contain a letter: `notes/a.b/c` and `notes/1.2/3` are
+  /// directories, and `.hidden` has no extension at all (`i <= 0`).
   static bool _looksLikeFile(String target) {
     final base = p.posix.basename(target);
     final i = base.lastIndexOf('.');
     if (i <= 0) return false;
-    final ext = base.substring(i + 1).toLowerCase();
-    return !ext.contains(RegExp(r'[A-Za-z]')) ? false : true;
+    return RegExp(r'[A-Za-z]').hasMatch(base.substring(i + 1));
   }
 
   static bool _sameDirectory(String a, String b) =>

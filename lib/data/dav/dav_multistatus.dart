@@ -297,12 +297,23 @@ class DavMultistatusParser {
 
   /// Parses an HTTP-date (RFC 1123 / RFC 850 / asctime) as UTC.
   ///
-  /// `HttpDate.parse` returns null for anything it does not recognise rather
-  /// than throwing, so a malformed `getlastmodified` degrades to "no timestamp"
-  /// instead of taking down a listing.
+  /// `HttpDate.parse` *throws* `HttpException` rather than returning null for
+  /// anything it does not recognise, so the tolerance is explicit in
+  /// [_parseOrNull].
   static DateTime? parseHttpDate(String? raw) {
     if (raw == null || raw.isEmpty) return null;
-    return HttpDate.parse(raw)?.toUtc();
+    return _parseOrNull(raw)?.toUtc();
+  }
+
+  static DateTime? _parseOrNull(String raw) {
+    try {
+      return HttpDate.parse(raw);
+    } on Object {
+      // A single malformed `getlastmodified` must degrade to "no timestamp"
+      // rather than take down a whole listing. The sync engine reads a null
+      // mtime as "unknown, re-fetch" — never as "changed".
+      return null;
+    }
   }
 
   static Iterable<XmlElement> _byLocalName(XmlNode root, String local) =>

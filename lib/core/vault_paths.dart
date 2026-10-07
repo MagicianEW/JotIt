@@ -151,6 +151,16 @@ abstract final class VaultPaths {
     return '$notesDirName/$seg';
   }
 
+  /// True when [name] contains a character that cannot appear in a filename on
+  /// Windows at all.
+  ///
+  /// Distinct from "creatable with a different name": a name holding one of
+  /// these can never equal the link text, so making a note for it would
+  /// produce an orphan file rather than a resolved link.
+  static bool hasIllegalFileNameChar(String name) =>
+      _illegalSegmentChars.hasMatch(name) ||
+      RegExp(r'[\x00-\x1f\x7f]').hasMatch(name);
+
   /// Sanitise one path segment for use in a conflict directory name
   /// (v3.0 §7.2). Replaces characters that are illegal on Windows or in
   /// Nextcloud, collapses control characters, and truncates to 160 UTF-8
@@ -170,6 +180,34 @@ abstract final class VaultPaths {
       end--; // do not split a multi-byte sequence
     }
     return utf8.decode(encoded.sublist(0, end), allowMalformed: true);
+  }
+
+  /// Sanitise a *filename* — stricter than [sanitizeSegment], because a name
+  /// that merely looks legal can still be uncreatable or, worse, silently
+  /// alias another file.
+  ///
+  /// Two Windows behaviours drive the extras:
+  ///
+  ///  * `report.` and `report` are the same file. Trailing dots and spaces are
+  ///    stripped by the filesystem without any error, so `[[v1.2]]` and
+  ///    `[[v1.2.]]` would land on one note and fight over it.
+  ///  * `CON`, `NUL`, `COM1`… cannot be created at all; worse, a path
+  ///    containing one is treated as a device reference by some APIs.
+  ///
+  /// Returns the cleaned name; never empty.
+  static String sanitizeFileName(String raw, {String fallback = 'untitled'}) {
+    var s = sanitizeSegment(raw, maxBytes: 100)
+        .replaceAll(RegExp(r'[. ]+$'), '')
+        .trim();
+    if (s.isEmpty) s = fallback;
+
+    final stem = s.contains('.')
+        ? s.substring(0, s.lastIndexOf('.')).toUpperCase()
+        : s.toUpperCase();
+    if (_reservedNames.contains(stem)) {
+      s = '${s}_';
+    }
+    return s;
   }
 
   static String _posixDirname(String posixPath) {

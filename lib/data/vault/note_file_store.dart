@@ -116,8 +116,15 @@ class NoteFileStore {
     }
     final decoded = utf8.decode(body, allowMalformed: true);
     final crlf = decoded.contains('\r\n');
-    final normalised = crlf ? text.replaceAll('\r\n', '\n') : text;
-    return <int>[...bom, ...utf8.encode(crlf ? normalised.replaceAll('\n', '\r\n') : normalised)];
+    // Normalise to LF first, then re-expand to whatever the file already used.
+    // Doing this one direction only (LF text -> CRLF, but not back) would
+    // rewrite every line of an LF note the moment a user pasted CRLF text
+    // into it — a whole-file diff that is both invisible and pointless.
+    final normalised = text.replaceAll('\r\n', '\n');
+    return <int>[
+      ...bom,
+      ...utf8.encode(crlf ? normalised.replaceAll('\n', '\r\n') : normalised),
+    ];
   }
 
   /// True when [bytes] is valid UTF-8.

@@ -146,20 +146,25 @@ class SyncObservation {
       localContentHash != null && localContentHash != baseContentHash;
 
   @override
-  String toString() => 'SyncObservation($path) ' + jsonEncode({
-        'localExists': localExists,
-        'localDeleted': localDeleted,
-        'localUid': localUid,
-        'localHash': _ab(localContentHash),
-        'remoteExists': remoteExists,
-        'remoteUid': remoteUid,
-        'remoteHash': _ab(remoteContentHash),
-        'remoteEtag': remoteEtag,
-        'baseEtag': baseEtag,
-        'baseHash': _ab(baseContentHash),
-        'knownBasePath': knownBasePathForRemoteUid,
-        'rejected': serverRejectedConditional,
-      });
+  String toString() {
+    // Bound to a local first: the map literal's closing brace would otherwise
+    // close the string interpolation early.
+    final fields = jsonEncode({
+      'localExists': localExists,
+      'localDeleted': localDeleted,
+      'localUid': localUid,
+      'localHash': _ab(localContentHash),
+      'remoteExists': remoteExists,
+      'remoteUid': remoteUid,
+      'remoteHash': _ab(remoteContentHash),
+      'remoteEtag': remoteEtag,
+      'baseEtag': baseEtag,
+      'baseHash': _ab(baseContentHash),
+      'knownBasePath': knownBasePathForRemoteUid,
+      'rejected': serverRejectedConditional,
+    });
+    return 'SyncObservation($path) $fields';
+  }
 
   static String _ab(String? v) =>
       v == null ? 'null' : '${v.substring(0, 8)}…';
