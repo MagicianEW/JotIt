@@ -1,13 +1,32 @@
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../data/db/note_dao.dart';
 import '../data/search/note_search.dart';
+import 'vault_locator.dart';
 import 'vault_session.dart';
+
+/// Resolved on startup so the first-run check has something to inspect.
+///
+/// [VaultLocator] needs the private app directory to keep the chosen path,
+/// and this is the one place that asks the platform for it.
+final vaultLocatorProvider = FutureProvider<VaultLocator>((ref) async {
+  final support = await getApplicationSupportDirectory();
+  return VaultLocator(Directory(p.join(support.path, 'JotIt')));
+});
 
 /// The open vault. Resolved once at startup; nothing below this point knows
 /// where the vault lives, and tests override this with a temp directory.
+///
+/// Depends on [vaultLocatorProvider] rather than resolving a location of its
+/// own, so changing the location invalidates exactly one thing and the old
+/// database is closed before the new one is opened.
 final vaultProvider = FutureProvider<VaultSession>((ref) async {
-  final root = await VaultSession.defaultVaultRoot();
+  final locator = await ref.watch(vaultLocatorProvider.future);
+  final root = (await locator.resolve()).path;
   final session = await VaultSession.open(root);
   ref.onDispose(session.close);
   return session;

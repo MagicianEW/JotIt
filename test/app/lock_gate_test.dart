@@ -73,6 +73,20 @@ Future<bool> tapUnlock(WidgetTester tester, String pin) async {
   return tapped;
 }
 
+/// Runs [body] on the real clock and returns its value.
+///
+/// A plain `await` on anything that touches the disk inside a `testWidgets`
+/// body never completes — the continuation is queued in the fake zone, and
+/// nothing flushes it once the test has stopped pumping. The failure mode is
+/// not an error; the test simply stops, and `flutter test` hangs with the
+/// suite looking like it passed. Every such await in this file goes through
+/// here.
+Future<T> read<T>(WidgetTester tester, Future<T> Function() body) async {
+  late T out;
+  await tester.runAsync(() async => out = await body());
+  return out;
+}
+
 /// Unmounts the gate so its countdown timer is cancelled.
 ///
 /// LockGate runs a Timer.periodic while a lockout is armed and cancels it
@@ -168,15 +182,27 @@ void main() {
     // Arm the lock in a previous "process", then open a second session over
     // the same database. If the gate derived its state from when the widget
     // mounted, the screen would be decorative.
+    //
+    // The three attempts are timestamped from the real clock. A literal like
+    // `1000 + i` reads tidier and is worthless: the gate checks `locked_until`
+    // against the real wall clock, so a deadline thirty seconds after 1970 is
+    // long expired by the time the widget reads it, the countdown never
+    // appears, and the correct PIN walks straight in — a test that passes for
+    // the opposite of the reason it exists.
+    final base = DateTime.now().millisecondsSinceEpoch;
     await tester.runAsync(() async {
       await fast.setPin('4815');
       for (var i = 0; i < 3; i++) {
-        await fast.unlock('0000', nowMs: 1000 + i);
+        await fast.unlock('0000', nowMs: base + i);
       }
     });
-    expect(AppLock.isLockedOut((await fast.read())!, 1500), isTrue);
+    final stored = await read(tester, fast.read);
+    expect(AppLock.isLockedOut(stored!, base), isTrue);
+    expect(AppLock.isLockedOut(stored, DateTime.now().millisecondsSinceEpoch),
+        isTrue,
+        reason: 'a 30s backoff started now has not expired yet');
 
-    final reopened = await VaultSession.open(root.path);
+    final reopened = await read(tester, () => VaultSession.open(root.path));
     addTearDown(reopened.close);
 
     await bootLocked(tester, reopened);

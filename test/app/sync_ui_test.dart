@@ -2,13 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:jotit/app/providers.dart';
 import 'package:jotit/app/vault_session.dart';
-import 'package:jotit/main.dart';
 import 'package:path/path.dart' as p;
 
+import '../support/boot_app.dart';
 import '../support/dav_harness.dart';
 
 /// The wiring, end to end, against a real server and a real sync engine.
@@ -68,10 +66,7 @@ Future<void> waitFor(
   });
 }
 
-Widget boot(VaultSession vault) => ProviderScope(
-      overrides: [vaultProvider.overrideWith((ref) async => vault)],
-      child: const JotItApp(),
-    );
+Widget boot(VaultSession vault, Directory root) => bootApp(vault: vault, root: root);
 
 void main() {
   late Directory root;
@@ -137,7 +132,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     await act(tester, () async {
-      await tester.pumpWidget(boot(vault));
+      await tester.pumpWidget(boot(vault, root));
       for (var i = 0; i < 30 && find.text('JotIt').evaluate().isEmpty; i++) {
         await tester.pump(const Duration(milliseconds: 50));
         await Future<void>.delayed(const Duration(milliseconds: 10));

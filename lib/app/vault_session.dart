@@ -22,6 +22,7 @@ import '../domain/entities/front_matter_patcher.dart';
 import '../domain/vault/vault_scanner.dart';
 import 'app_lock.dart';
 import 'credential_cipher.dart';
+import 'vault_locator.dart';
 
 /// Everything one open vault needs, assembled once at startup.
 ///
@@ -105,11 +106,13 @@ class VaultSession {
   /// is meant to open, edit and back up alongside everything else they own.
   /// Burying it in AppData is what makes a note app feel like it is keeping
   /// secrets from them.
-  static Future<String> defaultVaultRoot() async {
-    final docs = await getApplicationDocumentsDirectory();
-    return p.join(docs.path, 'JotIt');
-  }
-
+  ///
+  /// Honours a previously chosen location, and refuses to adopt a folder that
+  /// already belongs to something else — see [VaultLocator]. Kept as a static
+  /// so non-UI callers (tests, tools) can resolve the same location the app
+  /// does without going through a provider.
+  static Future<String> defaultVaultRoot({required VaultLocator locator}) async =>
+      (await locator.resolve()).path;
   Future<ReindexResult> reindex() =>
       VaultScanner(database: db, fileStore: files).reindex();
 

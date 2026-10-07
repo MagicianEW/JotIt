@@ -2,12 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:jotit/app/providers.dart';
 import 'package:jotit/app/vault_session.dart';
-import 'package:jotit/main.dart';
 import 'package:path/path.dart' as p;
+
+import '../support/boot_app.dart';
 
 /// The behaviour that has to hold before any of this is worth looking at on a
 /// desktop: opening a vault, creating a note, editing it, and getting the same
@@ -31,10 +30,7 @@ Future<void> pumpUntilFound(WidgetTester tester, Finder finder) async {
   });
 }
 
-Widget boot(VaultSession vault) => ProviderScope(
-      overrides: [vaultProvider.overrideWith((ref) async => vault)],
-      child: const JotItApp(),
-    );
+Widget boot(VaultSession vault, Directory root) => bootApp(vault: vault, root: root);
 
 void main() {
   late Directory root;
@@ -201,14 +197,14 @@ void main() {
     // runs inside a fake-async zone where real I/O — sqflite over an ffi
     // isolate — never completes, so the test hangs instead of failing.
     testWidgets('the shell builds', (tester) async {
-      await tester.pumpWidget(boot(vault));
+      await tester.pumpWidget(boot(vault, root));
       await pumpUntilFound(tester, find.text('JotIt'));
       expect(find.text('JotIt'), findsOneWidget);
     });
 
     testWidgets('an empty vault says so instead of showing a blank list',
         (tester) async {
-      await tester.pumpWidget(boot(vault));
+      await tester.pumpWidget(boot(vault, root));
       await pumpUntilFound(tester, find.text('库里还没有笔记'));
       expect(find.text('库里还没有笔记'), findsOneWidget);
     });
@@ -222,13 +218,13 @@ void main() {
     });
 
     testWidgets('the home page lists notes from the vault', (tester) async {
-      await tester.pumpWidget(boot(vault));
+      await tester.pumpWidget(boot(vault, root));
       await pumpUntilFound(tester, find.text('Alpha'));
       expect(find.text('Alpha'), findsOneWidget);
     });
 
     testWidgets('search filters the list', (tester) async {
-      await tester.pumpWidget(boot(vault));
+      await tester.pumpWidget(boot(vault, root));
       await pumpUntilFound(tester, find.text('Alpha'));
 
       await tester.runAsync(() async {

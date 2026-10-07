@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ui/home_page.dart';
 import 'ui/lock_gate.dart';
+import 'ui/vault_location_gate.dart';
 
 /// The JotIt shell.
 ///
@@ -36,7 +37,12 @@ class JotItApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const LockGate(child: HomePage()),
+      // Order matters: where the vault is, then whether it is locked, then the
+      // vault itself. Asking about a lock in a vault that has not been chosen
+      // yet would open the wrong database to find out.
+      home: const VaultLocationGate(
+        child: LockGate(child: HomePage()),
+      ),
     );
   }
 }
