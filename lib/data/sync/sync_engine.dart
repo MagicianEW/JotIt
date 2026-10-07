@@ -513,14 +513,12 @@ class SyncEngine {
       case SyncAction.uploadUpdate:
         final bytes = localBytes;
         if (bytes == null) return _Outcome.skipped;
-        final put = await dav.put(
-          path,
-          bytes,
-          condition: decision.action == SyncAction.uploadUpdate &&
-                  record?.baseEtag != null
-              ? DavIfMatch(record!.baseEtag!)
-              : DavIfAbsent(),
+
+        final condition = _conditionFor(
+          action: decision.action,
+          baseEtag: record?.baseEtag,
         );
+        final put = await dav.put(path, bytes, condition: condition);
         if (put.statusCode == 412 || put.statusCode == 409) {
           // §5.3 row 10: our base is stale. Re-classify next round rather than
           // retrying blindly against a token the server has moved past.
@@ -541,7 +539,7 @@ class SyncEngine {
           syncRootId: syncRootId,
           path: path,
           uid: observation.localUid,
-          baseEtag: put.etag,
+          baseEtag: put.etag ?? await _etagAfterWrite(path),
           baseContentHash: ContentHash.ofBytes(bytes),
           at: nowMs,
         );
@@ -598,7 +596,57 @@ class SyncEngine {
     }
   }
 
-  /// Removes the local file and records the tombstone.
+  /// Decides what precondition to attach to a write, from what the server has
+/// actually admitted about itself.
+///
+/// Three things are being avoided here, each of which produced a real failure:
+///
+///  * Sending `If-Match` to a weak-ETag server. RFC 7232 requires strong
+///    comparison, so it can never succeed, and `DavClient.put` refuses to
+///    send it at all — an unguarded engine threw out of every upload round.
+///    The Synology box behind this decision returns `W/"31-..."` for files.
+///  * Sending `If-None-Match: *` for an *update*. That turns "we do not have a
+///    base token" into "this path must not exist", so an update against a
+///    server that never returns an ETag is refused forever as a phantom 412.
+///  * Losing atomic create. `If-None-Match: *` compares nothing, so it is
+///    perfectly safe on a weak-ETag server and it is what keeps two devices
+///    from both creating the same path (matrix row 2).
+DavCondition _conditionFor({
+  required SyncAction action,
+  required String? baseEtag,
+}) {
+  final caps = dav.capabilities;
+  if (action == SyncAction.uploadCreate && caps.supportsIfNoneMatch) {
+    return const DavIfAbsent();
+  }
+  if (baseEtag != null && baseEtag.isNotEmpty &&
+      caps.supportsIfMatch && !caps.etagIsWeak) {
+    return DavIfMatch(baseEtag);
+  }
+  // No protection available on this server. §6.3 accepts the narrow
+  // lost-update window for the nginx-dav and weak-ETag profiles; what it does
+  // not accept is pretending the write was protected.
+  return const DavUnconditional();
+}
+
+/// The server's current ETag for [path], for servers that do not return one
+/// on PUT.
+///
+/// Apache mod_dav — which is what Synology DSM's WebDAV is — answers a
+/// successful PUT with no ETag header at all. Committing a null base there
+/// means every later round classifies the note as "remote state unknown" and
+/// re-downloads bytes it just wrote. One extra PROPFIND is cheaper than that,
+/// and the tag is needed before the next conditional write can be considered
+/// at all.
+Future<String?> _etagAfterWrite(String path) async {
+  try {
+    return (await dav.stat(path))?.etag;
+  } on DavException {
+    return null;
+  }
+}
+
+/// Removes the local file and records the tombstone.
   ///
   /// Both halves are required. The file alone would be resurrected by the next
   /// reindex; the index row alone would leave the file sitting in `notes/`,

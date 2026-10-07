@@ -665,6 +665,79 @@ void main() {
           reason: 'without a CTag every round must walk; skipping here is the '
               'v2.0 bug where a device reports itself in sync forever');
     });
+
+    // Synology DSM's WebDAV is Apache mod_dav, and it returns `W/"31-..."` for
+    // every file. Found against the real box, not guessed: with a weak-etag
+    // profile the unguarded engine sent If-Match, DavClient refused to send it,
+    // and the ArgumentError unwound out of the whole round.
+    group('a server with weak ETags', () {
+      DavCapabilities weakProfile() => const DavCapabilities(
+            supportsCtag: false,
+            etagIsWeak: true,
+            supportsIfMatch: true,
+            supportsIfNoneMatch: true,
+          );
+
+      SyncEngine weakEngine() => SyncEngine(
+            dav: dav.client(capabilities: weakProfile()),
+            files: files,
+            notes: notes,
+            meta: meta,
+            roots: roots,
+            vaultRoot: vault.path,
+          );
+
+      test('an edit still reaches the server instead of throwing', () async {
+        await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+        engine = weakEngine();
+        await run();
+
+        await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+        engine = weakEngine();
+        final result = await run();
+
+        expect(result.error, isNull);
+        expect(result.uploaded, contains('notes/a.md'));
+        expect(utf8.decode((await dav.readRemote('notes/a.md'))!),
+            contains('local edit'));
+      });
+
+      test('an update is never sent as a create', () async {
+        // `If-None-Match: *` on an existing path is a phantom 412. A server
+        // that hands back no ETag on PUT leaves the base empty, and a naive
+        // fallback turns every later update into a refused create.
+        await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+        engine = weakEngine();
+        await run();
+
+        await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+        engine = weakEngine();
+        final result = await run();
+
+        expect(result.preconditionFailed, isEmpty);
+        expect(result.error, isNull);
+        expect(result.uploaded, contains('notes/a.md'));
+      });
+
+      test('the base is still learned, so the next round converges', () async {
+        await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+        engine = weakEngine();
+        await run();
+
+        await writeLocal('notes/a.md', 'local edit', uid: 'u-a', title: 'A');
+        engine = weakEngine();
+        await run();
+
+        expect((await meta.byPath(rootId, 'notes/a.md'))!.baseEtag, isNotNull,
+            reason: 'the tag is recovered with a stat when PUT returns none');
+
+        engine = weakEngine();
+        final settled = await run();
+        expect(settled.uploaded, isEmpty);
+        expect(settled.downloaded, isEmpty,
+            reason: 'a note that just synced must not be re-downloaded');
+      });
+    });
   });
 }
 
