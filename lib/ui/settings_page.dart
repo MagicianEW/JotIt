@@ -581,13 +581,15 @@ class _LockSectionState extends ConsumerState<_LockSection> {
 
     // A new PIN resets the failure state: it is a new start, not a
     // continuation of whatever the old one was being brute-forced against.
-    await session.lock.setPin(pin);
+    // Through the session, so Android's FLAG_SECURE is set in the same breath
+    // (§8.3) — a lock that arms without protecting the screen protects nothing.
+    await session.setPin(pin);
     await _load();
   }
 
   Future<void> _remove() async {
     final session = await ref.read(vaultProvider.future);
-    await session.lock.clear();
+    await session.clearPin();
     await _load();
   }
 }

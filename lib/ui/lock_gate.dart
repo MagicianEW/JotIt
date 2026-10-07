@@ -57,6 +57,12 @@ class _LockGateState extends ConsumerState<LockGate> {
   Future<void> _check() async {
     final session = await ref.read(vaultProvider.future);
     final configured = await session.lock.isConfigured();
+    // §8.3: the same read that decides whether to show this gate is what tells
+    // Android to protect the screen. Doing it here rather than in the settings
+    // screen means the recents thumbnail is already blanked on the very first
+    // launch after a restart, which is exactly when the flag is otherwise
+    // lost — the process that set it may not be running any more.
+    await session.syncScreenSecurity();
     if (!mounted) return;
     setState(() {
       _locked = configured;

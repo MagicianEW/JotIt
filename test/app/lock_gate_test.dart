@@ -1,10 +1,12 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/app/app_lock.dart';
 import 'package:jotit/app/providers.dart';
+import 'package:jotit/app/screen_security.dart';
 import 'package:jotit/app/vault_session.dart';
 import 'package:jotit/ui/lock_gate.dart';
 
@@ -132,6 +134,44 @@ void main() {
     expect(find.text('THE VAULT'), findsNothing,
         reason: 'the whole point of the gate is that the vault is unreachable');
     expect(find.text('JotIt 已锁定'), findsOneWidget);
+  });
+
+  testWidgets('mounting the gate is also what arms FLAG_SECURE',
+      (tester) async {
+    // §8.3's screenshot protection is worthless if it is only set from the
+    // settings screen: by the time the recents thumbnail is taken, the user
+    // has long since left that screen and the process behind it may not even
+    // be running. The gate is the one thing that reads the lock on every
+    // launch, so it is the only place that can guarantee the flag is right
+    // before the first frame is on screen.
+    const channel = MethodChannel(ScreenSecurity.channelName);
+    final pushed = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      pushed.add(call);
+      return null;
+    });
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    final secure = await read(
+      tester,
+      () => VaultSession.open(root.path, screenSecurity: ScreenSecurity()),
+    );
+    addTearDown(secure.close);
+    await tester.runAsync(() => AppLock(secure.db, iterations: 1000).setPin('4815'));
+    pushed.clear();
+
+    await bootLocked(tester, secure);
+
+    expect(pushed, isNotEmpty,
+        reason: 'a lock that never arms FLAG_SECURE is a lock that can be '
+            'photographed out of the recents list');
+    expect(pushed.last.method, 'setFlagSecure');
+    expect(pushed.last.arguments, <String, Object?>{'enabled': true});
+    await unmount(tester);
   });
 
   testWidgets('the right PIN opens it', (tester) async {

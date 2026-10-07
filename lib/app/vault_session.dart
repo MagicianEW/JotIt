@@ -22,6 +22,7 @@ import '../domain/entities/front_matter_patcher.dart';
 import '../domain/vault/vault_scanner.dart';
 import 'app_lock.dart';
 import 'credential_cipher.dart';
+import 'screen_security.dart';
 import 'vault_locator.dart';
 
 /// Everything one open vault needs, assembled once at startup.
@@ -41,6 +42,7 @@ class VaultSession {
     required this.queue,
     required this.lock,
     required this.cipher,
+    required this.screenSecurity,
   });
 
   final String vaultRoot;
@@ -60,6 +62,10 @@ class VaultSession {
   /// vault does not depend on a platform plugin being available.
   final CredentialCipher cipher;
 
+  /// Android `FLAG_SECURE`, driven by whether a PIN exists. See
+  /// [ScreenSecurity] for why it is bound to the lock rather than always on.
+  final ScreenSecurity screenSecurity;
+
   Database get db => database.db;
 
   static const Uuid _uuid = Uuid();
@@ -74,6 +80,7 @@ class VaultSession {
   static Future<VaultSession> open(
     String vaultRoot, {
     Directory? appDataDir,
+    ScreenSecurity? screenSecurity,
   }) async {
     await NoteFileStore.ensureLayout(vaultRoot);
     final database = await JotItDatabase.open(
@@ -95,6 +102,7 @@ class VaultSession {
         final support = await getApplicationSupportDirectory();
         return Directory(p.join(support.path, 'JotIt'));
       }),
+      screenSecurity: screenSecurity ?? ScreenSecurity(),
     );
     await session.reindex();
     return session;
@@ -120,6 +128,33 @@ class VaultSession {
   String get databasePath => p.join(VaultPaths.appRoot(vaultRoot), 'jotit.db');
   String get conflictsPath => VaultPaths.conflictsRoot(vaultRoot);
   String get notesPath => VaultPaths.notesRoot(vaultRoot);
+
+  // ---------------------------------------------------------------- §8.3 lock
+
+  /// Sets the PIN, and tells the platform that the screen is now protected.
+  ///
+  /// The two are one action on purpose. Wiring `FLAG_SECURE` to the UI instead
+  /// would leave exactly one call site to forget, and forgetting it produces a
+  /// lock that looks armed and photographs nothing — the screenshot is taken
+  /// long after the gate is gone, so the user never learns it failed.
+  Future<void> setPin(String pin) async {
+    await lock.setPin(pin);
+    await syncScreenSecurity();
+  }
+
+  /// Removes the PIN, and gives screenshots back.
+  Future<void> clearPin() async {
+    await lock.clear();
+    await syncScreenSecurity();
+  }
+
+  /// Pushes the current lock state to the platform.
+  ///
+  /// Called at startup as well as from the two mutations above, because the
+  /// native side caches this value for process restarts and a cache that is
+  /// never refreshed drifts from the database the moment it is wrong.
+  Future<void> syncScreenSecurity() async =>
+      screenSecurity.applyForLock(lockConfigured: await lock.isConfigured());
 
   /// Reads a note for editing, or null when there is nothing editable there.
   ///
