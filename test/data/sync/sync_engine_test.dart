@@ -312,7 +312,59 @@ void main() {
     });
   });
 
-  group('deletions', () {
+  group('renames (matrix row 3)', () {
+    // The other device moved a file. Identity travels in the front matter,
+    // so the uid is the only reliable way to see this as a rename rather than
+    // as one deletion plus one unrelated new file.
+    Future<void> renameRemote(String from, String to, String uid) async {
+      final bytes = (await dav.readRemote(from))!;
+      await dav.seedRemote(to, bytes);
+      final f = File(p.join(dav.root.path, p.joinAll(from.split('/'))));
+      if (f.existsSync()) await f.delete();
+    }
+
+    test('a remote rename moves the local file and keeps the identity',
+        () async {
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      expect(await readLocal('notes/old.md'), contains('v1'));
+
+      await renameRemote('notes/old.md', 'notes/new.md', 'u-a');
+      await run();
+
+      expect(await files.readBytesIfPresent('notes/new.md'), isNotNull,
+          reason: 'the note should follow the file to its new home');
+      expect(await readLocal('notes/new.md'), contains('v1'));
+      expect(await files.readBytesIfPresent('notes/old.md'), isNull,
+          reason: 'leaving the old copy behind means the same note exists '
+              'twice, under two paths, forever');
+    });
+
+    test('a rename does not produce a conflict', () async {
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await renameRemote('notes/old.md', 'notes/new.md', 'u-a');
+
+      final result = await run();
+
+      expect(result.conflicts, isEmpty,
+          reason: 'a rename is not a divergence');
+      expect(ConflictWriter.pending(vault.path), isEmpty);
+    });
+
+    test('the base follows the rename and keeps the uid', () async {
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await renameRemote('notes/old.md', 'notes/new.md', 'u-a');
+      await run();
+
+      final moved = await meta.byPath(rootId, 'notes/new.md');
+      expect(moved, isNotNull);
+      expect(moved!.uid, 'u-a',
+          reason: 'losing the uid here is what makes the next round see a '
+              'rename and a delete instead');
+      expect(moved.baseEtag, isNotNull);
+    });
     test('a remote deletion propagates to a note nobody edited', () async {
       await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
       await run();

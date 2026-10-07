@@ -347,9 +347,9 @@ class SyncEngine {
   }) async {
     String? remoteUid;
     if (remote != null) {
-      // One GET to read the identity. Skipped when the ETag already proves the
-      // file is unchanged, because reading every note every round is what made
-      // v2.0's full sync unusable on a real vault.
+      // One GET per candidate path, to read the identity out of the front
+      // matter. Renames are found by identity, not by path (matrix row 3), and
+      // the identity only exists inside the file.
       final bytes = await dav.get(path);
       if (bytes != null && NoteFileStore.isValidUtf8(bytes)) {
         remoteUid = FrontMatterPatcher.readString(utf8.decode(bytes), 'uid');
@@ -439,16 +439,30 @@ class SyncEngine {
         return _Outcome.skipped;
 
       case SyncAction.remoteRenameAdopt:
-        // The file did not move on disk — only our idea of where it lives did.
-        await meta.remove(syncRootId, path);
+        // The other device moved the file; the uid proves it is the same
+        // note. Move the local file too, or the vault ends up holding one
+        // note twice under two paths — and the next round cannot tell which
+        // is which.
+        if (knownBasePath != null && knownBasePath != path) {
+          final from = files.fileFor(knownBasePath);
+          final to = files.fileFor(path);
+          if (from != null && to != null && await from.exists()) {
+            await to.parent.create(recursive: true);
+            if (await to.exists()) await to.delete();
+            await from.rename(to.path);
+            await meta.remove(syncRootId, knownBasePath);
+          }
+        }
+        // The identity comes from the *remote* copy. Taking the local base
+        // row's uid instead writes null, and the following round then sees a
+        // delete plus an unrelated new file rather than a rename.
         await meta.commitBase(
           syncRootId: syncRootId,
-          path: knownBasePath ?? path,
-          uid: observation.localUid,
+          path: path,
+          uid: observation.remoteUid ?? observation.localUid,
           baseEtag: remote?.etag,
           baseContentHash: record?.baseContentHash,
           at: nowMs,
-          basePath: path,
         );
         return _Outcome.downloaded;
 
@@ -462,7 +476,12 @@ class SyncEngine {
         await meta.commitBase(
           syncRootId: syncRootId,
           path: path,
-          uid: observation.localUid,
+          // A download is by definition a file this device has never seen, so
+          // the local uid is null here and the *remote* copy is the only place
+          // an identity can come from. Recording null breaks rename detection
+          // for every note that arrived from another device — which, in a
+          // multi-device vault, is nearly all of them.
+          uid: observation.remoteUid ?? observation.localUid,
           baseEtag: remote?.etag,
           baseContentHash: ContentHash.ofBytes(bytes),
           at: nowMs,
