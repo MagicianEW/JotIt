@@ -73,6 +73,22 @@ Future<bool> tapUnlock(WidgetTester tester, String pin) async {
   return tapped;
 }
 
+/// Unmounts the gate so its countdown timer is cancelled.
+///
+/// LockGate runs a Timer.periodic while a lockout is armed and cancels it
+/// in dispose(). A widget test that ends with the gate still mounted leaves
+/// that timer pending, and the test framework waits on it — the suite passes
+/// every test and then hangs instead of exiting.
+Future<void> unmount(WidgetTester tester) async {
+  await tester.runAsync(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  });
+}
+
 void main() {
   late Directory root;
   late VaultSession vault;
@@ -144,6 +160,7 @@ void main() {
     expect(find.textContaining('请稍候'), findsOneWidget);
     final button = tester.widget<FilledButton>(find.byType(FilledButton));
     expect(button.onPressed, isNull);
+    await unmount(tester);
   });
 
   testWidgets('a lockout armed before the restart still holds',
@@ -173,5 +190,6 @@ void main() {
     await tapUnlock(tester, '4815');
     expect(find.text('THE VAULT'), findsNothing,
         reason: 'the correct PIN must not open a lock that is still armed');
+    await unmount(tester);
   });
 }

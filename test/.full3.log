@@ -1,0 +1,495 @@
+﻿flutter : Flutter assets will be downloaded from https://storage.flutter-io.cn. Make sure you trust this source!
+所在位置 行:1 字符: 138
++ ... >&1 | Select-Object -Last 4; flutter test --timeout 120s 2>&1 | Out-F ...
++                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Flutter assets ...st this source!:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+00:00 +0: loading C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart
+00:00 +0: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the pin is never stored in the clear
+00:00 +1: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the pin is never stored in the clear
+00:00 +2: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the pin is never stored in the clear
+00:00 +3: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the pin is never stored in the clear
+00:00 +4: C:/Users/EW/Documents/JotIt/app/test/app/credential_cipher_test.dart: a tampered blob is rejected rather than decrypted
+00:00 +5: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the row holds a salt, a hash and the iteration count
+00:00 +6: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the row holds a salt, a hash and the iteration count
+00:00 +7: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the row holds a salt, a hash and the iteration count
+00:00 +8: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage the row holds a salt, a hash and the iteration count
+00:00 +9: C:/Users/EW/Documents/JotIt/app/test/app/credential_cipher_test.dart: a foreign key file fails loudly instead of minting a new key
+00:00 +10: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage two vaults with the same pin get different hashes
+00:00 +11: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage two vaults with the same pin get different hashes
+00:00 +12: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: pin storage an unset lock reports not configured
+00:00 +13: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: PBKDF2 matches published HMAC-SHA256 vectors
+00:00 +14: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: PBKDF2 iterating changes the result
+00:00 +15: C:/Users/EW/Documents/JotIt/app/test/app/app_lock_test.dart: PBKDF2 the spec iteration count is 600k
+00:00 +16: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +17: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +18: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +19: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +20: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +21: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +22: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +23: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +24: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +25: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +26: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +27: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +28: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +29: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:00 +30: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +31: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +32: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +33: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +34: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +35: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +36: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +37: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +38: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +39: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +40: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +41: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +42: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +43: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +44: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +45: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +46: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +47: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +48: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +49: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +50: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +51: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +52: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +53: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +54: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:01 +55: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: with no PIN the vault opens straight away
+00:02 +56: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:02 +57: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:02 +58: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:02 +59: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:02 +60: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:03 +61: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:03 +62: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:03 +63: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:03 +64: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:03 +65: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:04 +66: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a remote can be created through the settings dialog
+00:04 +67: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the right PIN opens it
+00:04 +68: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the right PIN opens it
+00:04 +69: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: capability probe reports the advertised DAV classes and server
+00:04 +70: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +71: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +72: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +73: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +74: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +75: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +76: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +77: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +78: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +79: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +80: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +81: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +82: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +83: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +84: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +85: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +86: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +87: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +88: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +89: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +90: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +91: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +92: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +93: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +94: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +95: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +96: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +97: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +98: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +99: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +100: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +101: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +102: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +103: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +104: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +105: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: the password is never stored in the clear
+00:05 +106: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a wrong PIN is refused and imposes nothing yet
+00:05 +107: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a wrong PIN is refused and imposes nothing yet
+00:05 +108: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a wrong PIN is refused and imposes nothing yet
+00:06 +109: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a wrong PIN is refused and imposes nothing yet
+00:06 +110: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: listing depth 1 lists direct children and reports a collection ctag
+00:06 +111: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: listing depth 1 lists direct children and reports a collection ctag
+00:06 +112: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: listing depth 1 lists direct children and reports a collection ctag
+00:06 +113: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: listing depth 1 lists direct children and reports a collection ctag
+00:06 +114: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: listing depth 1 lists direct children and reports a collection ctag
+00:06 +115: C:/Users/EW/Documents/JotIt/app/test/data/dav/dav_client_test.dart: listing depth 1 lists direct children and reports a collection ctag
+00:06 +116: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +117: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +118: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +119: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +120: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +121: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +122: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +123: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +124: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +125: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +126: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +127: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +128: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +129: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +130: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +131: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +132: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +133: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +134: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +135: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:06 +136: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +137: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +138: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +139: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +140: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +141: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +142: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +143: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +144: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +145: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +146: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +147: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +148: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +149: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +150: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +151: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +152: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +153: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +154: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +155: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +156: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +157: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +158: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +159: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a sync run uploads the vault and reports what it did
+00:07 +160: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:07 +161: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +162: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +163: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +164: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +165: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +166: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +167: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +168: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +169: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +170: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: the third wrong attempt arms the lock
+00:08 +171: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a second run with nothing changed reports no change
+00:08 +172: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a second run with nothing changed reports no change
+00:09 +173: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a second run with nothing changed reports no change
+00:09 +174: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a second run with nothing changed reports no change
+00:09 +175: C:/Users/EW/Documents/JotIt/app/test/app/sync_ui_test.dart: a second run with nothing changed reports no change
+00:09 +176: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:10 +177: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:10 +178: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:10 +179: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:10 +180: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:11 +181: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:11 +182: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:11 +183: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:11 +184: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:12 +185: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:12 +186: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:12 +187: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:13 +188: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:13 +189: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:13 +190: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:13 +191: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:13 +192: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:14 +193: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:14 +194: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:15 +195: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:15 +196: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +197: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +198: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +199: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +200: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +201: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +202: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +203: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +204: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +205: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +206: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +207: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +208: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +209: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +210: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +211: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +212: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +213: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +214: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +215: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +216: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +217: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +218: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +219: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +220: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +221: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +222: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +223: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +224: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +225: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +226: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +227: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +228: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +229: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +230: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:16 +231: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +232: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +233: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +234: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +235: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +236: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +237: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +238: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +239: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +240: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +241: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +242: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +243: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +244: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +245: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +246: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +247: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +248: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +249: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +250: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +251: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +252: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +253: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +254: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +255: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +256: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +257: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +258: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +259: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +260: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +261: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +262: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +263: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +264: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +265: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +266: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +267: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:17 +268: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +269: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +270: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +271: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +272: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +273: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +274: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +275: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +276: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +277: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +278: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +279: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +280: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +281: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +282: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +283: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +284: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +285: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +286: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +287: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +288: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +289: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +290: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +291: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +292: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +293: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +294: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:18 +295: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +296: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +297: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +298: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +299: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +300: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +301: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +302: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +303: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +304: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +305: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +306: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +307: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +308: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +309: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +310: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +311: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +312: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +313: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +314: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +315: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +316: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +317: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +318: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +319: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +320: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +321: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +322: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +323: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +324: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +325: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:19 +326: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +327: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +328: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +329: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +330: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +331: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +332: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +333: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +334: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +335: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +336: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +337: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +338: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +339: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +340: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +341: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +342: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +343: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +344: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +345: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +346: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +347: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +348: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +349: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +350: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +351: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +352: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +353: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +354: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +355: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +356: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +357: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +358: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +359: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +360: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +361: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +362: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +363: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +364: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +365: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:20 +366: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +367: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +368: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +369: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +370: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +371: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +372: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +373: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +374: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +375: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +376: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +377: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +378: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +379: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +380: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +381: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +382: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +383: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +384: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +385: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +386: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +387: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +388: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +389: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +390: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +391: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +392: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +393: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +394: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +395: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +396: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +397: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +398: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +399: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +400: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +401: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +402: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +403: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +404: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +405: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +406: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +407: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +408: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +409: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +410: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +411: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +412: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +413: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +414: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +415: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +416: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +417: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +418: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +419: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +420: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +421: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +422: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +423: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +424: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +425: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:21 +426: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +427: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +428: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +429: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +430: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +431: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +432: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +433: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +434: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +435: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +436: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +437: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +438: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +439: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +440: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +441: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +442: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +443: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +444: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +445: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +446: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +447: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +448: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +449: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +450: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +451: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +452: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +453: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +454: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +455: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +456: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +457: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +458: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +459: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +460: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:22 +461: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +462: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +463: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +464: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +465: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +465: C:/Users/EW/Documents/JotIt/app/test/integration/nas_webdav_test.dart: live NAS integration
+  Skip: JOTIT_DAV_URL is not set
+00:23 +465 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +466 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +467 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +468 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +469 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +470 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +471 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +472 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +473 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +474 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:23 +475 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:24 +476 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:24 +477 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:25 +478 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:26 +479 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:27 +480 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:27 +481 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:28 +482 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
+00:28 +483 ~1: C:/Users/EW/Documents/JotIt/app/test/app/lock_gate_test.dart: a lockout armed before the restart still holds
