@@ -80,6 +80,14 @@ class AppLock {
     );
   }
 
+  /// Turns the lock off, for a user who set one and then changed their mind.
+  ///
+  /// Removes the row rather than blanking the columns: a lock whose hash is
+  /// the empty string is a lock that every PIN opens.
+  Future<void> clear() async {
+    await _db.delete('app_lock', where: 'id = 1');
+  }
+
   Future<void> setBiometricEnabled(bool enabled) async {
     await _db.update('app_lock', {'biometric_on': enabled ? 1 : 0},
         where: 'id = 1');

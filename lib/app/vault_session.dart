@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -7,15 +8,20 @@ import 'package:uuid/uuid.dart';
 
 import '../core/content_hash.dart';
 import '../core/vault_paths.dart';
+import '../data/dav/dav_capabilities.dart';
+import '../data/dav/dav_client.dart';
 import '../data/db/jotit_database.dart';
 import '../data/db/note_dao.dart';
 import '../data/db/pending_queue.dart';
 import '../data/db/sync_meta_store.dart';
 import '../data/db/sync_root_store.dart';
 import '../data/search/note_search.dart';
+import '../data/sync/sync_engine.dart';
 import '../data/vault/note_file_store.dart';
 import '../domain/entities/front_matter_patcher.dart';
 import '../domain/vault/vault_scanner.dart';
+import 'app_lock.dart';
+import 'credential_cipher.dart';
 
 /// Everything one open vault needs, assembled once at startup.
 ///
@@ -32,6 +38,8 @@ class VaultSession {
     required this.meta,
     required this.roots,
     required this.queue,
+    required this.lock,
+    required this.cipher,
   });
 
   final String vaultRoot;
@@ -42,6 +50,14 @@ class VaultSession {
   final SyncMetaStore meta;
   final SyncRootStore roots;
   final PendingQueue queue;
+
+  /// §8.3. Reached from the UI, not just the tests — a lock that exists only in
+  /// a library is not a lock.
+  final AppLock lock;
+
+  /// Where sealed WebDAV credentials live. Resolved on first use, so opening a
+  /// vault does not depend on a platform plugin being available.
+  final CredentialCipher cipher;
 
   Database get db => database.db;
 
@@ -54,7 +70,10 @@ class VaultSession {
   /// whatever is on disk is the truth, the index is only whatever we last
   /// managed to derive from it. Skipping this would open the app showing an
   /// index that may not match the vault at all.
-  static Future<VaultSession> open(String vaultRoot) async {
+  static Future<VaultSession> open(
+    String vaultRoot, {
+    Directory? appDataDir,
+  }) async {
     await NoteFileStore.ensureLayout(vaultRoot);
     final database = await JotItDatabase.open(
       filePath: p.join(VaultPaths.appRoot(vaultRoot), 'jotit.db'),
@@ -69,6 +88,12 @@ class VaultSession {
       meta: SyncMetaStore(database.db),
       roots: SyncRootStore(database.db),
       queue: PendingQueue(database.db),
+      lock: AppLock(database.db),
+      cipher: CredentialCipher(() async {
+        if (appDataDir != null) return appDataDir;
+        final support = await getApplicationSupportDirectory();
+        return Directory(p.join(support.path, 'JotIt'));
+      }),
     );
     await session.reindex();
     return session;
@@ -172,8 +197,63 @@ class VaultSession {
 
   Future<void> close() => database.close();
 
+  /// Builds a client for [root] with the capability profile §6.2 negotiated and
+  /// persisted earlier, so a Synology box is not asked for a CTag it will
+  /// never send on every cold start.
+  DavClient clientFor(SyncRootRecord root, String password) => DavClient(
+        baseUri: Uri.parse(root.baseUrl),
+        username: root.username,
+        password: password,
+        capabilities: DavCapabilities.fromJson(root.capabilities),
+      );
+
+  /// Everything one round needs: the client, the engine, and the close that
+  /// releases the HTTP connection.
+  ///
+  /// A round gets its own client rather than sharing one, because
+  /// `capabilities` is mutable state that `probe()` rewrites. Two rounds on two
+  /// roots would otherwise fight over the same object.
+  Future<SyncHandle> openSync(SyncRootRecord root, String password) async {
+    final client = clientFor(root, password);
+    return SyncHandle(
+      client: client,
+      engine: SyncEngine(
+        dav: client,
+        files: files,
+        notes: notes,
+        meta: meta,
+        roots: roots,
+        queue: queue,
+        vaultRoot: vaultRoot,
+      ),
+    );
+  }
+
+  /// The stored password for [root], or null when there is none to unseal.
+  Future<String?> passwordFor(SyncRootRecord root) =>
+      cipher.open(root.credentialBlob);
+
+  /// Replaces [root]'s credentials. An empty password clears the blob rather
+  /// than sealing an empty string, so "no password" stays distinguishable from
+  /// "the password is an empty string".
+  Future<void> setPassword(SyncRootRecord root, String password) async {
+    await roots.upsert(password.isEmpty
+        ? root.copyWith(clearCredential: true)
+        : root.copyWith(credentialBlob: await cipher.seal(password)));
+  }
+
   static String _safeFileName(String raw) =>
       VaultPaths.sanitizeFileName(raw.replaceAll(RegExp(r'[\\/]'), '_'));
+}
+
+/// One configured remote plus the objects needed to run a round against it.
+class SyncHandle {
+  SyncHandle({required this.client, required this.engine});
+
+  final DavClient client;
+  final SyncEngine engine;
+
+  Future<void> close() => client.close();
 }
 
 /// A note as the editor sees it, with the byte conventions it must hand back.

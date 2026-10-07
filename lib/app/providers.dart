@@ -86,3 +86,8 @@ final editableNoteProvider = FutureProvider<EditableNote?>((ref) async {
 /// is on disk.
 void invalidateNotes(WidgetRef ref) =>
     ref.read(notesVersionProvider.notifier).bump();
+
+/// The same, for callers that hold a [Ref] rather than a [WidgetRef] — the
+/// sync controller runs outside the widget tree.
+void invalidateNotesFromRef(Ref ref) =>
+    ref.read(notesVersionProvider.notifier).bump();

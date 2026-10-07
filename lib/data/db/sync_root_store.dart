@@ -13,6 +13,7 @@ class SyncRootRecord {
     this.collectionCtag,
     this.username,
     this.capabilities = const <String, Object?>{},
+    this.credentialBlob,
     this.enabled = true,
     this.lastSyncAt,
     this.nextAttemptAt = 0,
@@ -35,6 +36,14 @@ class SyncRootRecord {
   /// engine stops asking a Synology box for a CTag it will never send.
   final Map<String, Object?> capabilities;
 
+  /// §8.3: the WebDAV password, sealed. Never the cleartext, never a log line.
+  ///
+  /// See `CredentialCipher` for what "sealed" is worth here — the honest
+  /// answer today is "more than nothing, less than §8.3 asks for", and the
+  /// reason is written down next to the code rather than left to be
+  /// discovered during an audit.
+  final String? credentialBlob;
+
   final bool enabled;
   final int? lastSyncAt;
 
@@ -46,17 +55,72 @@ class SyncRootRecord {
 
   bool isReadyAt(int nowMs) => enabled && nextAttemptAt <= nowMs;
 
+  /// Copying with named fields, because half of a sync root is configuration
+  /// the user edits one piece at a time and re-reading the row to change a
+  /// single column is how the other columns quietly revert.
+  SyncRootRecord copyWith({
+    String? name,
+    String? baseUrl,
+    String? collectionCtag,
+    String? username,
+    Map<String, Object?>? capabilities,
+    String? credentialBlob,
+    bool clearCredential = false,
+    bool? enabled,
+    int? lastSyncAt,
+    int? nextAttemptAt,
+    String? lastError,
+  }) =>
+      SyncRootRecord(
+        id: id,
+        name: name ?? this.name,
+        baseUrl: baseUrl ?? this.baseUrl,
+        collectionCtag: collectionCtag ?? this.collectionCtag,
+        username: username ?? this.username,
+        capabilities: capabilities ?? this.capabilities,
+        credentialBlob:
+            clearCredential ? null : (credentialBlob ?? this.credentialBlob),
+        enabled: enabled ?? this.enabled,
+        lastSyncAt: lastSyncAt ?? this.lastSyncAt,
+        nextAttemptAt: nextAttemptAt ?? this.nextAttemptAt,
+        lastError: lastError ?? this.lastError,
+      );
+
   static SyncRootRecord fromRow(Map<String, Object?> row) => SyncRootRecord(
         id: row['id']! as String,
         name: row['name'] as String,
         baseUrl: row['base_url'] as String,
         collectionCtag: row['collection_ctag'] as String?,
         username: row['username'] as String?,
+        // §6.2 persists the negotiated profile so a restart stops asking a
+        // Synology box for a CTag it will never send. Reading it back is the
+        // other half of that promise: storing it and never loading it leaves the
+        // engine re-deriving the same answer on every cold start, which is the
+        // behaviour the column was added to remove.
+        capabilities: decodeCapabilities(row['capabilities']),
+        credentialBlob: row['credential_blob'] as String?,
         enabled: (row['enabled'] as int? ?? 1) == 1,
         lastSyncAt: row['last_sync_at'] as int?,
         nextAttemptAt: (row['next_attempt_at'] as int?) ?? 0,
         lastError: row['last_error'] as String?,
       );
+
+  /// Tolerates the three states a stored capability can be in: absent (written
+  /// by an older build), `{}` (never probed) and real JSON. A malformed blob
+  /// degrades to "nothing negotiated yet" rather than taking the settings page
+  /// down.
+  static Map<String, Object?> decodeCapabilities(Object? raw) {
+    if (raw is Map) return Map<String, Object?>.from(raw);
+    if (raw is String && raw.trim().isNotEmpty && raw.trim() != '{}') {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) return Map<String, Object?>.from(decoded);
+      } on FormatException {
+        return const <String, Object?>{};
+      }
+    }
+    return const <String, Object?>{};
+  }
 }
 
 /// Reads and writes `sync_roots`.
@@ -94,6 +158,7 @@ class SyncRootStore {
           'collection_ctag': record.collectionCtag,
           'username': record.username,
           'capabilities': _encodeCapabilities(record.capabilities),
+          'credential_blob': record.credentialBlob,
           'enabled': record.enabled ? 1 : 0,
           'last_sync_at': record.lastSyncAt,
           'next_attempt_at': record.nextAttemptAt,
@@ -105,6 +170,15 @@ class SyncRootStore {
   /// Stores the CTag from a completed round. Only written when the server
   /// actually sent one — overwriting a good token with null would silently
   /// downgrade the next round to a full walk.
+  /// Removes a remote and everything derived from it.
+  ///
+  /// `sync_meta` and `pending_ops` cascade from the foreign key, which is what
+  /// we want: a merge base for a root that no longer exists is not something to
+  /// keep around in case the user re-adds the same URL. The notes themselves
+  /// are untouched — they live in the vault, not in the database.
+  Future<int> remove(String id) =>
+      _root.delete('sync_roots', where: 'id = ?', whereArgs: [id]);
+
   Future<void> saveCollectionCtag(String id, String? ctag) async {
     if (ctag == null) return;
     await _root.update('sync_roots', {'collection_ctag': ctag},

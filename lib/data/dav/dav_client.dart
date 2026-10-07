@@ -56,7 +56,7 @@ class DavPutResult {
 class DavClient {
   DavClient({
     required Uri baseUri,
-    required this.username,
+    this.username,
     required this.password,
     this.capabilities = DavCapabilities.unknown,
     http.Client? httpClient,
@@ -68,7 +68,7 @@ class DavClient {
         _ownsHttpClient = httpClient == null;
 
   final Uri baseUri;
-  final String username;
+  final String? username;
   final String password;
   DavCapabilities capabilities;
   final Duration timeout;
@@ -122,12 +122,17 @@ class DavClient {
     return baseUri.resolve(joined.isEmpty ? '' : '$joined/');
   }
 
-  Map<String, String> get _auth => <String, String>{
-        // RFC 7617. Encoded by hand because a colon inside the password must
-        // not be read as the username/password separator.
-        'Authorization':
-            'Basic ${base64Encode(utf8.encode('$username:$password'))}',
-      };
+  /// No Authorization header at all when [username] is null — a WebDAV share
+  /// can be anonymous, and sending `Basic null:password` is not the same
+  /// thing as sending nothing.
+  Map<String, String> get _auth => username == null
+      ? <String, String>{}
+      : <String, String>{
+          // RFC 7617. Encoded by hand because a colon inside the password must
+          // not be read as the username/password separator.
+          'Authorization':
+              'Basic ${base64Encode(utf8.encode('$username:$password'))}',
+        };
 
   Future<http.Response> _send(
     String method,

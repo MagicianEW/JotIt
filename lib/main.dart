@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ui/home_page.dart';
+import 'ui/lock_gate.dart';
 
 /// The JotIt shell.
 ///
@@ -35,7 +36,7 @@ class JotItApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: const LockGate(child: HomePage()),
     );
   }
 }
