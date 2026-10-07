@@ -110,12 +110,12 @@ class SyncEngine {
     required int nowMs,
     DavCapabilities? capabilities,
   }) async {
-    final started = machine.apply(SyncEvent.trigger);
-    if (started.to == SyncState.idle) {
-      // Single-flight: a session is already in flight, so report its state
-      // rather than starting a second one.
-      return const SyncBatchResult();
-    }
+    // Single-flight: if a session is already in flight the second caller gets
+    // the running state back rather than starting a concurrent round. Checked
+    // before the trigger, because once the first session has left `idle` a
+    // trigger is simply an event it does not handle.
+    if (machine.isRunning) return const SyncBatchResult();
+    machine.apply(SyncEvent.trigger);
 
     var result = const SyncBatchResult();
     try {
@@ -126,22 +126,53 @@ class SyncEngine {
       machine.apply(SyncEvent.probed);
 
       final snapshot = await _walk();
-      machine.apply(snapshot.collectionCtag == null
-          ? SyncEvent.remoteScanDegraded
-          : SyncEvent.remoteScanned);
-      if (snapshot.collectionCtag != null) {
-        machine.apply(SyncEvent.remoteScanned);
+      if (snapshot.collectionCtag == null) {
+        // A server with no CTag stays in `remoteScan` for the full walk and
+        // only moves on once the listing is in hand — the §5.2 self-loop.
+        machine.apply(SyncEvent.remoteScanDegraded);
       }
+      machine.apply(SyncEvent.remoteScanned);
       machine.apply(SyncEvent.localScanned);
 
       final base = await meta.allForRoot(syncRootId);
-      final changes = RemoteDiff.between(snapshot, base);
+      final localPaths = (await notes.allActive()).map((n) => n.path).toList();
 
       final q = queue;
-      if (q != null && await q.countPending(syncRootId) > 0) {
+      final backlog = q != null && await q.countPending(syncRootId) > 0;
+      if (backlog) {
+        // CTag or not, queued work must reach the server. Skipping the drain
+        // because the remote looks unchanged is how offline edits were lost.
         machine.apply(SyncEvent.queueReady);
         machine.apply(SyncEvent.queueEmpty);
-      } else if (changes.isEmpty) {
+        machine.apply(SyncEvent.localScanned);
+      }
+
+      final changes = RemoteDiff.between(snapshot, base);
+
+      // A local note with no base row has never been uploaded. Calling the
+      // round "nothing to do" on those is what leaves a new note sitting on
+      // the device forever.
+      final unsyncedLocal = <String>[];
+      final locallyEdited = <String>[];
+      for (final p in localPaths) {
+        final record = await meta.byPath(syncRootId, p);
+        if (record == null) {
+          unsyncedLocal.add(p);
+          continue;
+        }
+        // A purely local edit produces no remote change at all, so the remote
+        // diff cannot see it. Comparing each note's own bytes against its base
+        // hash is the only way an offline edit reaches the server.
+        final bytes = await files.readBytesIfPresent(p);
+        if (bytes == null) continue;
+        if (ContentHash.ofBytes(bytes) != record.baseContentHash) {
+          locallyEdited.add(p);
+        }
+      }
+
+      final nothingToDo =
+          changes.isEmpty && !backlog && unsyncedLocal.isEmpty && locallyEdited.isEmpty;
+      if (nothingToDo) {
         machine.apply(SyncEvent.queueEmpty);
         machine.apply(SyncEvent.backoffElapsed);
         return result;
@@ -152,6 +183,7 @@ class SyncEngine {
         syncRootId: syncRootId,
         snapshot: snapshot,
         base: base,
+        localPaths: localPaths,
         nowMs: nowMs,
       );
       machine.apply(SyncEvent.batchCompleted);
@@ -220,6 +252,7 @@ class SyncEngine {
     required String syncRootId,
     required RemoteSnapshot snapshot,
     required List<SyncMetaRecord> base,
+    required List<String> localPaths,
     required int nowMs,
   }) async {
     final downloaded = <String>[];
@@ -229,10 +262,14 @@ class SyncEngine {
     final skipped = <String>[];
 
     // Everything the matrix could have an opinion about: what the remote has,
-    // plus whatever the base remembers.
+    // what the base remembers, and **what only this device has**. Leaving the
+    // local-only paths out is the bug that makes a brand new note invisible:
+    // it is in neither the snapshot nor `sync_meta`, so it never reaches
+    // `classifySync` and never gets uploaded.
     final paths = <String>{
       ...snapshot.entries.keys,
       ...base.map((r) => r.path),
+      ...localPaths,
     }.toList()
       ..sort();
 
@@ -263,6 +300,7 @@ class SyncEngine {
 
       final outcome = await _carryOut(
         decision: decision,
+        observation: observation,
         path: path,
         remote: remote,
         record: record,
@@ -359,6 +397,7 @@ class SyncEngine {
 
   Future<_Outcome> _carryOut({
     required SyncDecision decision,
+    required SyncObservation observation,
     required String path,
     required RemoteEntry? remote,
     required SyncMetaRecord? record,
@@ -405,7 +444,7 @@ class SyncEngine {
         await meta.commitBase(
           syncRootId: syncRootId,
           path: knownBasePath ?? path,
-          uid: decision.detail.isEmpty ? record?.uid : null,
+          uid: observation.localUid,
           baseEtag: remote?.etag,
           baseContentHash: record?.baseContentHash,
           at: nowMs,
@@ -423,7 +462,7 @@ class SyncEngine {
         await meta.commitBase(
           syncRootId: syncRootId,
           path: path,
-          uid: decision.detail.isEmpty ? record?.uid : null,
+          uid: observation.localUid,
           baseEtag: remote?.etag,
           baseContentHash: ContentHash.ofBytes(bytes),
           at: nowMs,
@@ -450,7 +489,7 @@ class SyncEngine {
         await meta.commitBase(
           syncRootId: syncRootId,
           path: path,
-          uid: record?.uid,
+          uid: observation.localUid,
           baseEtag: put.etag,
           baseContentHash: ContentHash.ofBytes(bytes),
           at: nowMs,
@@ -467,31 +506,17 @@ class SyncEngine {
         return _Outcome.skipped;
 
       case SyncAction.restoreRemoteDelete:
-        // The remote is the authority on deletions: a user who wants it back
-        // restores from the remote, not from this device's copy.
-        await notes.softDelete(path, at: nowMs);
-        await meta.commitBase(
-          syncRootId: syncRootId,
-          path: path,
-          uid: record?.uid,
-          baseEtag: null,
-          baseContentHash: null,
-          at: nowMs,
-        );
+        // The remote is the authority on deletions. Marking the index row
+        // without removing the file would let the next reindex resurrect it,
+        // and a resurrection looks exactly like the device undoing the
+        // deletion by itself.
+        await _applyLocalDeletion(path: path, at: nowMs, uid: observation.localUid);
         return _Outcome.deleted;
 
       case SyncAction.deleteVsModifyPreserveLocal:
         // Copies are already on disk. The local edit becomes a tombstone so
         // the deletion propagates, and the edit stays recoverable.
-        await notes.softDelete(path, at: nowMs);
-        await meta.commitBase(
-          syncRootId: syncRootId,
-          path: path,
-          uid: record?.uid,
-          baseEtag: null,
-          baseContentHash: null,
-          at: nowMs,
-        );
+        await _applyLocalDeletion(path: path, at: nowMs, uid: observation.localUid);
         return _Outcome.deleted;
 
       case SyncAction.deleteVsModifyPreserveRemote:
@@ -509,6 +534,21 @@ class SyncEngine {
   /// Folds the round's outcome back into `sync_roots`: the CTag that lets the
   /// next round skip the walk, and the backoff deadline that keeps a restart
   /// from resetting the wait.
+  /// Removes the local file and records the tombstone.
+  ///
+  /// Both halves are required. The file alone would be resurrected by the next
+  /// reindex; the index row alone would leave the file sitting in `notes/`,
+  /// which is a deleted note that still opens.
+  Future<void> _applyLocalDeletion({
+    required String path,
+    required int at,
+    required String? uid,
+  }) async {
+    final file = files.fileFor(path);
+    if (file != null && await file.exists()) await file.delete();
+    await notes.softDelete(path, at: at);
+  }
+
   Future<void> recordSuccess({
     required String syncRootId,
     required int nowMs,
