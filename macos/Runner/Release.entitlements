@@ -1,8 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The sandbox is off, deliberately.
+
+  Two things this app promises are incompatible with it:
+
+  1. **The notes are ordinary files.** Under the sandbox, `~/Documents` is
+     redirected into the app's container
+     (`~/Library/Containers/com.jotit.jotit/Data/Documents`). A user who opens
+     their vault folder in Finder sees nothing, and "here, edit your Markdown
+     in any editor" stops being true. `path_provider` returns the container
+     path either way, so the code cannot tell the difference — only the
+     entitlement can.
+
+  2. **The server is wherever the user put it.** A self-hosted WebDAV box on a
+     LAN address is the normal case, and the sandbox would need
+     `com.apple.security.network.client` granted by hand and a user consent
+     flow for files.
+
+  JotIt is distributed outside the Mac App Store, to people who run their own
+  server; there is no untrusted-install threat the sandbox is protecting
+  against that a signed, direct-download app does not already answer.
+
+  What this costs, stated plainly: the app has the same file and network
+  permissions as the user's own shell. It also means **no Hardened Runtime
+  notarisation-friendly distribution** for the App Store — by design.
+
+  If a store-ready build is ever wanted, the work is not flipping this back:
+  it is `com.apple.security.files.user-selected.read-write` plus a folder
+  picker, which is a different file API, not a different entitlement.
+-->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
 </dict>
 </plist>

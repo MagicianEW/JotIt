@@ -22,6 +22,29 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<!--
+	  App Transport Security, narrowed to the local network.
+
+	  The test server is `http://192.168.1.100:35115`, and ATS blocks cleartext
+	  by default — the Mac equivalent of Android 9 blocking `http://`, and with
+	  the same failure mode: the app builds, installs, opens a note, and every
+	  sync dies on a rule the user has no way to see.
+
+	  `NSAllowsLocalNetworking` covers `.local` names, link-local addresses and
+	  the private ranges 10/8, 172.16/12 and 192.168/16 — so a NAS on the home
+	  LAN works, while arbitrary cleartext to the internet does not. That is
+	  deliberately tighter than Android's `cleartextTrafficPermitted="true"`,
+	  which has no local-only variant because Android's network security config
+	  takes hostnames and not address ranges.
+
+	  If the server is on a public host, it needs a real certificate and an
+	  `https://` URL; nothing here downgrades a TLS request.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
