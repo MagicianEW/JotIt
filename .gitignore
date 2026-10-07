@@ -1,0 +1,20 @@
+﻿# Build output
+build/
+.dart_tool/
+.packages
+*.iml
+.idea/
+
+# Flutter/Dart local state
+pubspec.lock
+
+# Vault data and the local WebDAV test root — never commit user content
+*.jotit.db
+*.jotit.db-wal
+*.jotit.db-shm
+.jotit/
+_conflicts/
+test-vault*/
+
+# Generated
+*.g.dart
