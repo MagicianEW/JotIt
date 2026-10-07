@@ -118,4 +118,47 @@ void main() {
     expect(VaultLocator.inspect(withNotes), VaultVerdict.occupied);
     expect(VaultLocator.isVault(withNotes), isFalse);
   });
+
+  group('picking the default directory', () {
+    // The Android branch cannot be reached from this machine — `Platform
+    // .isAndroid` is false here, and so it is in CI. Pulling the decision out
+    // into a function of its arguments is the only way these lines ever get
+    // executed by a test. The reason that matters is not theoretical: the
+    // Android release APK shipped without an INTERNET permission and without
+    // a cleartext policy, and both of those only misbehave on a device.
+    Directory docs() => Directory(p.join(root.path, 'internal'));
+    Directory ext() => Directory(p.join(root.path, 'external'));
+
+    test('desktop uses the documents directory', () {
+      expect(
+        chooseDefaultDir(isAndroid: false, documents: docs(), external: ext()).path,
+        p.join(docs().path, 'JotIt'),
+      );
+    });
+
+    test('android uses the external directory', () {
+      expect(
+        chooseDefaultDir(isAndroid: true, documents: docs(), external: ext()).path,
+        p.join(ext().path, 'JotIt'),
+      );
+    });
+
+    test('android without external storage falls back rather than refusing',
+        () {
+      // An unmounted volume must not stop the user reaching their notes.
+      expect(
+        chooseDefaultDir(isAndroid: true, documents: docs(), external: null).path,
+        p.join(docs().path, 'JotIt'),
+      );
+    });
+
+    test('desktop ignores an external directory it was handed', () {
+      // Guards against a future caller passing the external one on desktop and
+      // quietly moving every existing user's vault.
+      expect(
+        chooseDefaultDir(isAndroid: false, documents: docs(), external: ext()).path,
+        isNot(startsWith(ext().path)),
+      );
+    });
+  });
 }

@@ -30,37 +30,29 @@ class VaultLocator {
   /// key is: `path_provider` is a platform channel, and putting it on the
   /// startup path makes the whole app untestable without a plugin.
   ///
-  /// Android gets the **app-specific external** directory rather than the
-  /// internal one, and the difference is smaller than it looks. `/data/data/
-  /// <pkg>/` is genuinely unreachable — no file manager, no other editor, gone
-  /// with the app. `/storage/emulated/0/Android/data/<pkg>/files` at least
-  /// lives on the shared volume, survives a reinstall in the ways that matter,
-  /// and is visible when the phone is plugged into a computer over MTP or USB.
-  ///
-  /// What it does **not** give you: on Android 11 and later the platform hides
-  /// `Android/data/` from file managers, so a person still cannot browse their
-  /// notes with another app on the phone itself. The sanctioned way to get a
-  /// folder the user picks is the Storage Access Framework, and this app does
-  /// not implement it — every path here is a real filesystem path, which SAF
-  /// cannot provide. Until it does, the honest description is "your notes are
-  /// on the phone and reachable from a computer", not "your notes are ordinary
-  /// files you can open in anything", and the Settings screen always shows the
-  /// exact path so nobody has to guess.
+  /// The platform question itself is [chooseDefaultDir], which takes the two
+  /// directories as arguments and can therefore be tested. `Platform.isAndroid`
+  /// cannot: the only machine this was developed on reports `Platform.isAndroid`
+  /// as false, so a branch that reads it directly is a branch nobody ever
+  /// runs — which is how the Android build ended up with no INTERNET
+  /// permission and no cleartext policy, both of which only misbehave on a
+  /// device.
   Future<Directory> defaultDir() async {
     final override = _documentsOverride;
     if (override != null) return Directory(p.join(override.path, 'JotIt'));
+
+    Directory? external;
     if (Platform.isAndroid) {
       // Nullable on purpose: the platform says null when external storage is
-      // not mounted, which happens on a device with the volume unmounted and
-      // in some enterprise-locked profiles. Falling back to the internal
-      // directory is worse, but it works; refusing to start is not.
-      final external = await getExternalStorageDirectory();
-      if (external != null) {
-        return Directory(p.join(external.path, 'JotIt'));
-      }
+      // not mounted, which happens with the volume unmounted and in some
+      // enterprise-locked profiles.
+      external = await getExternalStorageDirectory();
     }
-    final docs = await getApplicationDocumentsDirectory();
-    return Directory(p.join(docs.path, 'JotIt'));
+    return chooseDefaultDir(
+      isAndroid: Platform.isAndroid,
+      documents: await getApplicationDocumentsDirectory(),
+      external: external,
+    );
   }
 
   /// The configured location, or the default when nothing is stored.
@@ -108,6 +100,36 @@ class VaultLocator {
     return VaultVerdict.occupied;
   }
 }
+
+/// Picks where the vault goes, given what the platform can offer.
+///
+/// Android gets the **app-specific external** directory rather than the
+/// internal one, and the difference is smaller than it looks. The internal
+/// `/data/data/<pkg>/` tree is genuinely unreachable — no file manager, no
+/// other editor, gone with the app. `Android/data/<pkg>/files` at least lives
+/// on the shared volume and is visible when the phone is plugged into a
+/// computer over MTP or USB.
+///
+/// What it does **not** give you: on Android 11 and later the platform hides
+/// `Android/data/` from file managers, so a person still cannot browse their
+/// notes with another app on the phone itself. The sanctioned way to get a
+/// folder the user picks is the Storage Access Framework, and this app does
+/// not implement it — every path here is a real filesystem path, which SAF
+/// cannot provide. Until it does, the honest description is "your notes are on
+/// the phone and reachable from a computer", not "your notes are ordinary files
+/// you can open in anything".
+///
+/// A null [external] falls back to [documents]. Worse, but it works; refusing
+/// to start is not an option when the volume is merely unmounted.
+Directory chooseDefaultDir({
+  required bool isAndroid,
+  required Directory documents,
+  required Directory? external,
+}) =>
+    Directory(p.join(
+      (isAndroid && external != null ? external : documents).path,
+      'JotIt',
+    ));
 
 /// Where the vault will be opened from, and how that came about.
 class VaultLocation {
