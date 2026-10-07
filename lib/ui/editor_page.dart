@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
@@ -41,21 +42,32 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         final leave = await _confirmDiscard();
         if (leave && context.mounted) Navigator.of(context).pop();
       },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(_titleOf(path), overflow: TextOverflow.ellipsis),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.save_outlined),
-              tooltip: '保存 (Ctrl+S)',
-              onPressed: _loaded ? _save : null,
-            ),
-          ],
-        ),
-        body: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(child: Text('打不开：$e')),
-          data: (note) => _body(note, path),
+      // The save button's tooltip says "保存 (Ctrl+S)", so Ctrl+S has to
+      // exist. It did not: a tooltip promising a shortcut nothing listens for
+      // is worse than no tooltip, because the user is told to press something
+      // and nothing happens. Meta is bound alongside Control for the macOS
+      // build, where Control is not the primary modifier.
+      child: CallbackShortcuts(
+        bindings: <ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.keyS, control: true): _save,
+          const SingleActivator(LogicalKeyboardKey.keyS, meta: true): _save,
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: Text(_titleOf(path), overflow: TextOverflow.ellipsis),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.save_outlined),
+                tooltip: '保存 (Ctrl+S)',
+                onPressed: _loaded ? _save : null,
+              ),
+            ],
+          ),
+          body: async.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (e, _) => Center(child: Text('打不开：$e')),
+            data: (note) => _body(note, path),
+          ),
         ),
       ),
     );
@@ -85,6 +97,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
+              key: const ValueKey('editor-body'),
               controller: _controller,
               maxLines: null,
               expands: true,

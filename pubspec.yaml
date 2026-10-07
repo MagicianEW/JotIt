@@ -55,9 +55,16 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # Drives the real application on a real desktop, against a real server.
+  # `flutter test` runs widgets in a fake environment where the clock does not
+  # move; this is the only way to find out what the program does when it is
+  # actually running.
+  integration_test:
+    sdk: flutter
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
-  # activated in the `analysis_options.yaml` file located at the root of your
+  # activated in the `analysis_options.yaml` file located at the root of the
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0

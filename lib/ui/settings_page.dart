@@ -246,112 +246,168 @@ Future<void> _editRoot(
   final session = await ref.read(vaultProvider.future);
   if (!context.mounted) return;
 
-  final name = TextEditingController(text: existing?.name ?? '');
-  final url = TextEditingController(text: existing?.baseUrl ?? '');
-  final user = TextEditingController(text: existing?.username ?? '');
-  final pass = TextEditingController();
-  final formKey = GlobalKey<FormState>();
-  var deleteRequested = false;
-
-  final saved = await showDialog<bool>(
+  final result = await showDialog<RemoteDialogResult>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Text(existing == null ? '添加远端' : '编辑远端'),
-      content: Form(
-        key: formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              key: const ValueKey('root-name'),
-              controller: name,
-              decoration: const InputDecoration(labelText: '名称'),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? '给这个远端起个名字' : null,
-            ),
-            TextFormField(
-              key: const ValueKey('root-url'),
-              controller: url,
-              decoration: const InputDecoration(
-                labelText: 'WebDAV 地址',
-                hintText: 'http://192.168.1.100:35115/webDAV/JotIt/',
-              ),
-              validator: (v) {
-                final u = Uri.tryParse(v?.trim() ?? '');
-                if (u == null || !u.hasScheme || u.host.isEmpty) {
-                  return '需要一个完整的 http/https 地址';
-                }
-                return null;
-              },
-            ),
-            TextFormField(
-              key: const ValueKey('root-user'),
-              controller: user,
-              decoration: const InputDecoration(
-                labelText: '用户名（可留空）',
-              ),
-            ),
-            TextFormField(
-              key: const ValueKey('root-pass'),
-              controller: pass,
-              obscureText: true,
-              decoration: InputDecoration(
-                labelText: '密码',
-                helperText: existing?.credentialBlob == null
-                    ? '会加密后保存'
-                    : '留空表示不改动已保存的密码',
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        if (existing != null)
-          TextButton(
-            onPressed: () {
-              deleteRequested = true;
-              Navigator.of(context).pop(false);
-            },
-            child: const Text('删除'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
-            if (formKey.currentState?.validate() != true) return;
-            Navigator.of(context).pop(true);
-          },
-          child: const Text('保存'),
-        ),
-      ],
-    ),
+    builder: (context) => _RemoteDialog(existing: existing),
   );
+  if (result == null) return;
 
-  if (deleteRequested && existing != null) {
-    await session.roots.remove(existing.id);
+  if (result.delete) {
+    await session.roots.remove(existing!.id);
     invalidateSyncRoots(ref);
     return;
   }
 
-  if (saved != true) return;
-
-  final raw = url.text.trim();
+  final raw = result.url.trim();
   final normalised = raw.endsWith('/') ? raw : '$raw/';
   final record = SyncRootRecord(
     id: existing?.id ?? const Uuid().v4(),
-    name: name.text.trim(),
+    name: result.name.trim(),
     baseUrl: normalised,
-    username: user.text.trim().isEmpty ? null : user.text.trim(),
+    username: result.username.trim().isEmpty ? null : result.username.trim(),
     capabilities: existing?.capabilities ?? const <String, Object?>{},
     enabled: existing?.enabled ?? true,
   );
 
   await session.roots.upsert(record);
-  final typed = pass.text;
-  if (typed.isNotEmpty) await session.setPassword(record, typed);
+  if (result.password.isNotEmpty) await session.setPassword(record, result.password);
   invalidateSyncRoots(ref);
+}
+
+/// What [_RemoteDialog] hands back.
+class RemoteDialogResult {
+  const RemoteDialogResult.save({
+    required this.name,
+    required this.url,
+    required this.username,
+    required this.password,
+  }) : delete = false;
+
+  const RemoteDialogResult.delete()
+      : delete = true,
+        name = '',
+        url = '',
+        username = '',
+        password = '';
+
+  final bool delete;
+  final String name;
+  final String url;
+  final String username;
+
+  /// Empty means "leave the saved password alone", which is different from
+  /// saving an empty one.
+  final String password;
+}
+
+/// The add/edit remote form.
+///
+/// A widget rather than an inline `AlertDialog` so its four controllers are
+/// disposed with it. Owned from the calling method they were simply never
+/// released at all, once per dialog.
+class _RemoteDialog extends StatefulWidget {
+  const _RemoteDialog({this.existing});
+
+  final SyncRootRecord? existing;
+
+  @override
+  State<_RemoteDialog> createState() => _RemoteDialogState();
+}
+
+class _RemoteDialogState extends State<_RemoteDialog> {
+  late final TextEditingController _name =
+      TextEditingController(text: widget.existing?.name ?? '');
+  late final TextEditingController _url =
+      TextEditingController(text: widget.existing?.baseUrl ?? '');
+  late final TextEditingController _user =
+      TextEditingController(text: widget.existing?.username ?? '');
+  final TextEditingController _pass = TextEditingController();
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _url.dispose();
+    _user.dispose();
+    _pass.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (_formKey.currentState?.validate() != true) return;
+    Navigator.of(context).pop(RemoteDialogResult.save(
+      name: _name.text,
+      url: _url.text,
+      username: _user.text,
+      password: _pass.text,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.existing == null ? '添加远端' : '编辑远端'),
+        content: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                key: const ValueKey('root-name'),
+                controller: _name,
+                decoration: const InputDecoration(labelText: '名称'),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? '给这个远端起个名字' : null,
+              ),
+              TextFormField(
+                key: const ValueKey('root-url'),
+                controller: _url,
+                decoration: const InputDecoration(
+                  labelText: 'WebDAV 地址',
+                  hintText: 'http://192.168.1.100:35115/webDAV/JotIt/',
+                ),
+                validator: (v) {
+                  final u = Uri.tryParse(v?.trim() ?? '');
+                  if (u == null || !u.hasScheme || u.host.isEmpty) {
+                    return '需要一个完整的 http/https 地址';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                key: const ValueKey('root-user'),
+                controller: _user,
+                decoration: const InputDecoration(
+                  labelText: '用户名（可留空）',
+                ),
+              ),
+              TextFormField(
+                key: const ValueKey('root-pass'),
+                controller: _pass,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: '密码',
+                  helperText: widget.existing?.credentialBlob == null
+                      ? '会加密后保存'
+                      : '留空表示不改动已保存的密码',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          if (widget.existing != null)
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(context).pop(const RemoteDialogResult.delete()),
+              child: const Text('删除'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(onPressed: _save, child: const Text('保存')),
+        ],
+      );
 }
 
 /// §7.3 — conflicts still awaiting a decision.
@@ -515,55 +571,18 @@ class _LockSectionState extends ConsumerState<_LockSection> {
     final session = await ref.read(vaultProvider.future);
     if (!mounted) return;
 
-    final pin = TextEditingController();
-    final confirm = TextEditingController();
-    final ok = await showDialog<bool>(
+    // The dialog returns the PIN itself, so its two controllers die with the
+    // dialog. Built here, they would outlive it.
+    final pin = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('设置 PIN'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: pin,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              maxLength: 32,
-              decoration: const InputDecoration(labelText: '新 PIN', counterText: ''),
-            ),
-            TextField(
-              controller: confirm,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              maxLength: 32,
-              decoration:
-                  const InputDecoration(labelText: '再输一次', counterText: ''),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (pin.text.length < 4) return;
-              if (pin.text != confirm.text) return;
-              Navigator.of(context).pop(true);
-            },
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (context) => const _PinDialog(),
     );
+    if (pin == null) return;
 
-    if (ok == true) {
-      // A new PIN resets the failure state: it is a new start, not a
-      // continuation of whatever the old one was being brute-forced against.
-      await session.lock.setPin(pin.text);
-      await _load();
-    }
+    // A new PIN resets the failure state: it is a new start, not a
+    // continuation of whatever the old one was being brute-forced against.
+    await session.lock.setPin(pin);
+    await _load();
   }
 
   Future<void> _remove() async {
@@ -571,6 +590,83 @@ class _LockSectionState extends ConsumerState<_LockSection> {
     await session.lock.clear();
     await _load();
   }
+}
+
+/// Asks for a PIN twice and hands back a value only when the two agree.
+class _PinDialog extends StatefulWidget {
+  const _PinDialog();
+
+  @override
+  State<_PinDialog> createState() => _PinDialogState();
+}
+
+class _PinDialogState extends State<_PinDialog> {
+  final TextEditingController _pin = TextEditingController();
+  final TextEditingController _confirm = TextEditingController();
+  String? _problem;
+
+  @override
+  void dispose() {
+    _pin.dispose();
+    _confirm.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (_pin.text.length < 4) {
+      setState(() => _problem = '至少 4 位');
+      return;
+    }
+    if (_pin.text != _confirm.text) {
+      setState(() => _problem = '两次输入不一样');
+      return;
+    }
+    Navigator.of(context).pop(_pin.text);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('设置 PIN'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const ValueKey('new-pin'),
+              controller: _pin,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 32,
+              decoration: const InputDecoration(
+                labelText: '新 PIN',
+                counterText: '',
+              ),
+            ),
+            TextField(
+              key: const ValueKey('new-pin-confirm'),
+              controller: _confirm,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 32,
+              decoration: const InputDecoration(
+                labelText: '再输一次',
+                counterText: '',
+              ),
+            ),
+            if (_problem != null)
+              Text(
+                _problem!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(onPressed: _save, child: const Text('保存')),
+        ],
+      );
 }
 
 /// §4.5 — rebuild the derived index without touching a single user file.

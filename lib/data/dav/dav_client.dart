@@ -379,6 +379,38 @@ class DavClient {
     );
   }
 
+  /// Creates [collectionPath] and every missing folder above it.
+  ///
+  /// A `PUT` into a folder that does not exist comes back **409 Conflict**,
+  /// and a 409 that nobody acts on means a brand new vault can never sync to
+  /// an empty server: every note is refused, every round, forever. Walking
+  /// down one segment at a time is what makes `notes/sub/note.md` work as
+  /// well as `notes/note.md` — `MKCOL` of a deep path against a server that
+  /// does not create intermediates answers 409 for the same reason.
+  ///
+  /// 201 means it was created, 405 means it was already there (RFC 4918
+  /// §9.3.1), and both are success. Anything else is a real failure and is
+  /// thrown: quietly carrying on would put the 409 straight back into the
+  /// engine's "our base is stale" bucket, which is a lie.
+  Future<void> ensureCollection(String collectionPath) async {
+    final segments = collectionPath
+        .split('/')
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+    var walked = '';
+    for (final segment in segments) {
+      walked = walked.isEmpty ? segment : '$walked/$segment';
+      final response = await _send('MKCOL', collectionUrlFor(walked),
+          statusCodesAsResults: const <int>{405});
+      if (response.statusCode == 201 || response.statusCode == 405) continue;
+      throw DavException(
+        method: 'MKCOL',
+        uri: collectionUrlFor(walked),
+        reason: 'could not create the folder (HTTP ${response.statusCode})',
+      );
+    }
+  }
+
   /// Delete a file. A missing file is success: the postcondition the caller
   /// cares about is "it is gone", not "it was there a moment ago".
   Future<bool> delete(String path, {String? ifMatch}) async {

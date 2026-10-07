@@ -18,6 +18,8 @@ test-vault*/
 
 # Generated
 *.g.dart
+.flutter-plugins
+.flutter-plugins-dependencies
 
 # transient test logs written to disk so a background run can be inspected
 test/.*.log

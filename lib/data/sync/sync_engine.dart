@@ -518,7 +518,18 @@ class SyncEngine {
           action: decision.action,
           baseEtag: record?.baseEtag,
         );
-        final put = await dav.put(path, bytes, condition: condition);
+        var put = await dav.put(path, bytes, condition: condition);
+
+        if (put.statusCode == 409) {
+          // 409 from a PUT is a missing folder, not a stale base. On a server
+          // that has never seen this vault it comes back for every note, and
+          // reporting it as "your base moved" is worse than useless: the
+          // counter climbs, nothing is uploaded, and the Settings page
+          // describes a race that never happened.
+          await dav.ensureCollection(_parentOf(path));
+          put = await dav.put(path, bytes, condition: condition);
+        }
+
         if (put.statusCode == 412 || put.statusCode == 409) {
           // §5.3 row 10: our base is stale. Re-classify next round rather than
           // retrying blindly against a token the server has moved past.
@@ -530,7 +541,9 @@ class SyncEngine {
           await meta.notePreconditionFailed(
             syncRootId: syncRootId,
             path: path,
-            error: 'HTTP ${put.statusCode}',
+            error: put.statusCode == 409
+                ? 'HTTP 409（远端缺少所在的文件夹，重试后仍被拒绝）'
+                : 'HTTP ${put.statusCode}',
             at: nowMs,
           );
           return _Outcome.retryNextRound;
@@ -627,6 +640,16 @@ DavCondition _conditionFor({
   // lost-update window for the nginx-dav and weak-ETag profiles; what it does
   // not accept is pretending the write was protected.
   return const DavUnconditional();
+}
+
+/// The folder [path] lives in, relative to the vault root.
+///
+/// `notes/a.md` is in `notes`, and a note in a subfolder is in that subfolder:
+/// the server has to be asked to create the whole chain, not just the last
+/// step, or `notes/sub/a.md` fails on a vault that has never had a subfolder.
+String _parentOf(String path) {
+  final slash = path.lastIndexOf('/');
+  return slash <= 0 ? '' : path.substring(0, slash);
 }
 
 /// The server's current ETag for [path], for servers that do not return one

@@ -213,6 +213,106 @@ void main() {
     });
   });
 
+  group('a server that will not create folders for you', () {
+    // The whole group runs against `--strict-collections`, which makes a PUT
+    // into a missing folder answer 409 the way Apache mod_dav — Synology DSM's
+    // WebDAV — actually does. Found by running the Windows app against a real
+    // NAS: every note was refused forever, and the Settings page blamed a
+    // stale base that had never existed.
+    late DavHarness strict;
+    late Directory strictVault;
+    late JotItDatabase strictDb;
+    late NoteFileStore strictFiles;
+    late NoteDao strictNotes;
+    late SyncMetaStore strictMeta;
+    late SyncRootStore strictRoots;
+    late SyncEngine strictEngine;
+
+    setUp(() async {
+      strict = await DavHarness.start(extraArgs: ['--strict-collections']);
+      strictVault = await Directory.systemTemp.createTemp('jotit_strict_');
+      strictFiles = NoteFileStore(vaultRoot: strictVault.path);
+      await NoteFileStore.ensureLayout(strictVault.path);
+      strictDb = await JotItDatabase.open(
+        filePath: p.join(VaultPaths.appRoot(strictVault.path), 'jotit.db'),
+      );
+      strictNotes = NoteDao(strictDb.db);
+      strictMeta = SyncMetaStore(strictDb.db);
+      strictRoots = SyncRootStore(strictDb.db);
+      // `sync_meta` has a foreign key onto `sync_roots`, so a round without a
+      // registered root fails before it ever reaches the server.
+      await strictRoots.upsert(SyncRootRecord(
+        id: rootId,
+        name: 'strict',
+        baseUrl: strict.baseUri().toString(),
+        username: 'testuser',
+      ));
+      strictEngine = SyncEngine(
+        dav: strict.client(),
+        files: strictFiles,
+        notes: strictNotes,
+        meta: strictMeta,
+        roots: strictRoots,
+        vaultRoot: strictVault.path,
+      );
+    });
+
+    tearDown(() async {
+      await strictDb.close();
+      if (strictVault.existsSync()) await strictVault.delete(recursive: true);
+      await strict.dispose();
+    });
+
+    test('a brand new vault uploads its first note', () async {
+      // The server has never seen `notes/`, and this is the very first round
+      // of a vault that has never synced anywhere.
+      expect(await strict.remoteExists('notes'), isFalse);
+
+      await strictFiles.writeAtomic('notes/a.md', utf8.encode(note('u-a', 'A', 'body')));
+      await VaultScanner(database: strictDb.db, fileStore: strictFiles).reindex();
+
+      now += 1000;
+      final result = await strictEngine.run(syncRootId: rootId, nowMs: now);
+
+      expect(result.error, isNull);
+      expect(result.preconditionFailed, isEmpty,
+          reason: 'a missing folder is not a stale base');
+      expect(result.uploaded, contains('notes/a.md'));
+      expect(utf8.decode((await strict.readRemote('notes/a.md'))!),
+          contains('body'));
+    });
+
+    test('a note in a subfolder creates the whole chain', () async {
+      // MKCOL of a deep path does not create the levels above it either, so a
+      // single-level fix would work for `notes/a.md` and fail for
+      // `notes/sub/a.md`.
+      await strictFiles.writeAtomic('notes/sub/a.md',
+          utf8.encode(note('u-a', 'A', 'body')));
+      await VaultScanner(database: strictDb.db, fileStore: strictFiles).reindex();
+
+      now += 1000;
+      final result = await strictEngine.run(syncRootId: rootId, nowMs: now);
+
+      expect(result.error, isNull);
+      expect(result.uploaded, contains('notes/sub/a.md'));
+      expect(await strict.remoteExists('notes/sub/a.md'), isTrue);
+    });
+
+    test('the second round is still a no-op', () async {
+      await strictFiles.writeAtomic('notes/a.md', utf8.encode(note('u-a', 'A', 'body')));
+      await VaultScanner(database: strictDb.db, fileStore: strictFiles).reindex();
+      now += 1000;
+      await strictEngine.run(syncRootId: rootId, nowMs: now);
+
+      now += 1000;
+      final second = await strictEngine.run(syncRootId: rootId, nowMs: now);
+
+      expect(second.uploaded, isEmpty);
+      expect(second.downloaded, isEmpty);
+      expect(second.preconditionFailed, isEmpty);
+    });
+  });
+
   group('remote edits', () {
     test('an untouched local note adopts the remote version', () async {
       await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
@@ -796,6 +896,10 @@ class _MutateOnFirstGet extends DavClient {
     DavCondition condition = const DavUnconditional(),
   }) =>
       _inner.put(path, bytes, condition: condition);
+
+  @override
+  Future<void> ensureCollection(String collectionPath) =>
+      _inner.ensureCollection(collectionPath);
 
   @override
   Future<bool> delete(String path, {String? ifMatch}) =>

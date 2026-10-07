@@ -236,6 +236,21 @@ void main() {
     });
   });
 
+  group('creating folders', () {
+    test('a missing folder is created and a repeat call is a no-op', () async {
+      await client.ensureCollection('notes/deep');
+
+      expect(await client.listCollection('notes/deep'), isNotNull);
+      // 405 means "already there" (RFC 4918 §9.3.1), which is a success here.
+      // Throwing on it would make every second upload fail.
+      await client.ensureCollection('notes/deep');
+    });
+
+    test('an empty path means the vault root, which exists', () async {
+      await client.ensureCollection('');
+    });
+  });
+
   group('rename', () {
     test('MOVE keeps the file reachable at the new path only', () async {
       await seed('old.md', _note);

@@ -64,7 +64,7 @@ class DavHarness {
     final port = probe.port;
     await probe.close();
 
-    final script = File(p.join(_repoRoot(), 'tools', 'webdav-test-server.mjs'));
+    final script = File(p.join(_packageRoot(), 'tools', 'webdav-test-server.mjs'));
     if (!script.existsSync()) {
       throw StateError('test server script not found at ${script.path}');
     }
@@ -131,19 +131,24 @@ class DavHarness {
     }
   }
 
-  /// Walks up from the working directory to the package root (the directory
-  /// holding pubspec.yaml) and returns its parent. Hardcoding a relative depth
-  /// is a trap: `flutter test` runs with the workspace root as the cwd, while
-  /// `dart run` uses the package root.
-  static String _repoRoot() {
+  /// Walks up from the working directory to the directory holding
+  /// pubspec.yaml.
+  ///
+  /// The server script lives *inside* the package rather than one level above
+  /// it. It used to sit outside, which meant the behaviour of the whole test
+  /// suite depended on a file no clone would ever contain — and the first
+  /// capability flag added to it (`--strict-collections`) would have been
+  /// invisible to anybody else running these tests.
+  static String _packageRoot() {
     var dir = Directory.current.absolute;
     while (!File(p.join(dir.path, 'pubspec.yaml')).existsSync()) {
       final parent = dir.parent;
       if (parent.path == dir.path) {
-        throw StateError('could not find pubspec.yaml above ${Directory.current}');
+        throw StateError(
+            'could not find pubspec.yaml above ${Directory.current}');
       }
       dir = parent;
     }
-    return dir.parent.path;
+    return dir.path;
   }
 }

@@ -65,34 +65,18 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   Future<void> _createNote() async {
     final session = await ref.read(vaultProvider.future);
-    final controller = TextEditingController();
-    if (!mounted) {
-      controller.dispose();
-      return;
-    }
+    if (!mounted) return;
+
+    // The controller belongs to the dialog, not to this method.
+    // `showDialog` completes the moment `pop` is called — not when the route
+    // has finished animating out — so disposing a controller here tears it
+    // down while the dialog's `TextField` is still mounted and rebuilding,
+    // and Flutter rightly complains that a disposed controller is being
+    // used. That fires on every single note created on a real device.
     final title = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('新建笔记'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: '标题'),
-          onSubmitted: (v) => Navigator.of(context).pop(v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('创建'),
-          ),
-        ],
-      ),
+      builder: (context) => const _NewNoteDialog(),
     );
-    controller.dispose();
     if (title == null || !mounted) return;
 
     final path = await session.createNote(title: title);
@@ -103,6 +87,47 @@ class _HomePageState extends ConsumerState<HomePage> {
       MaterialPageRoute<void>(builder: (_) => const EditorPage()),
     );
   }
+}
+
+/// "New note", as its own widget so its text controller has the same lifetime
+/// as the field that uses it. See [_HomePageState._createNote].
+class _NewNoteDialog extends StatefulWidget {
+  const _NewNoteDialog();
+
+  @override
+  State<_NewNoteDialog> createState() => _NewNoteDialogState();
+}
+
+class _NewNoteDialogState extends State<_NewNoteDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('新建笔记'),
+        content: TextField(
+          key: const ValueKey('new-note-title'),
+          controller: _controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '标题'),
+          onSubmitted: (v) => Navigator.of(context).pop(v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(_controller.text),
+            child: const Text('创建'),
+          ),
+        ],
+      );
 }
 
 class _SearchBar extends StatelessWidget {
