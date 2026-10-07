@@ -226,6 +226,12 @@ class AppLock {
         }
       }
       out.setRange((block - 1) * 32, block * 32, acc);
+      // §8.3 asks for key material to be cleared once it has been used. `acc`
+      // and the final `u` are both PBKDF2 output derived from the PIN, and
+      // both survive this function otherwise. Copy first, wipe second, for the
+      // same reason `out` below is handled that way.
+      _wipe(acc);
+      _wipe(u);
     }
 
     // Copy first, wipe second. `sublistView` aliases rather than copies, so
@@ -247,6 +253,12 @@ class AppLock {
       salt[i] = _random.nextInt(256);
     }
     return salt;
+  }
+
+  static void _wipe(Uint8List bytes) {
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = 0;
+    }
   }
 
   static int _nowMs() => DateTime.now().millisecondsSinceEpoch;

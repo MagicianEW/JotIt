@@ -50,11 +50,17 @@ class CredentialCipher {
     final nonce = _randomBytes(12);
     final secret = await _loadOrCreateKey();
 
-    final box = await _gcm.encrypt(
-      utf8.encode(plaintext),
-      secretKey: secret,
-      nonce: nonce,
-    );
+    // `utf8.encode` hands back a `Uint8List`, and it holds the password in the
+    // clear. `copy` first: the encoder is free to return a view, and wiping
+    // through a view of a buffer the cipher is still reading would blank the
+    // ciphertext too.
+    final clear = Uint8List.fromList(utf8.encode(plaintext));
+    final SecretBox box;
+    try {
+      box = await _gcm.encrypt(clear, secretKey: secret, nonce: nonce);
+    } finally {
+      _wipe(clear);
+    }
 
     final out = Uint8List(nonce.length + box.cipherText.length + box.mac.bytes.length);
     out.setRange(0, nonce.length, nonce);
@@ -92,8 +98,18 @@ class CredentialCipher {
         nonce: nonce,
         mac: Mac(macBytes),
       );
-      final clear = await _gcm.decrypt(box, secretKey: await _loadOrCreateKey());
-      return utf8.decode(clear);
+      // The one place in this file that ever holds a bare WebDAV password in
+      // mutable memory. `utf8.decode` copies out of it and is done before the
+      // wipe; after that the only copy left is the `String`, which Dart gives
+      // us no way to reach.
+      final clear = Uint8List.fromList(
+        await _gcm.decrypt(box, secretKey: await _loadOrCreateKey()),
+      );
+      try {
+        return utf8.decode(clear);
+      } finally {
+        _wipe(clear);
+      }
     } on Object {
       return null;
     }
