@@ -263,12 +263,14 @@ Future<void> _editRoot(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextFormField(
+              key: const ValueKey('root-name'),
               controller: name,
               decoration: const InputDecoration(labelText: '名称'),
               validator: (v) =>
                   (v == null || v.trim().isEmpty) ? '给这个远端起个名字' : null,
             ),
             TextFormField(
+              key: const ValueKey('root-url'),
               controller: url,
               decoration: const InputDecoration(
                 labelText: 'WebDAV 地址',
@@ -283,12 +285,14 @@ Future<void> _editRoot(
               },
             ),
             TextFormField(
+              key: const ValueKey('root-user'),
               controller: user,
               decoration: const InputDecoration(
                 labelText: '用户名（可留空）',
               ),
             ),
             TextFormField(
+              key: const ValueKey('root-pass'),
               controller: pass,
               obscureText: true,
               decoration: InputDecoration(
