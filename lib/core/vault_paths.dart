@@ -151,6 +151,34 @@ abstract final class VaultPaths {
     return '$notesDirName/$seg';
   }
 
+  /// The directory name that marks a subtree as attachments rather than notes.
+  static const String attachmentsDirName = 'attachments';
+
+  /// True when [vaultPath] names an attachment rather than a note.
+  ///
+  /// The test is the *directory*, not the extension: `notes/a/b.png` is a note
+  /// that happens to be called `.png` (and should be ignored as one, or at
+  /// least never uploaded as an attachment), while `notes/b/attachments/x.png`
+  /// is an attachment whatever it is called. §9.3 is what put the directory
+  /// there, so the directory is what identifies one.
+  ///
+  /// This lives here rather than in the scanner because three unrelated places
+  /// have to agree on it — the scanner (what to index), the sync engine (what
+  /// to transfer, and under *different* rules, §5.5), and anything that asks
+  /// "is this a note or a picture". Three private copies of the same three-line
+  /// predicate is three chances to disagree, and the sync engine disagreeing
+  /// with the scanner is how an image ends up in `_conflicts/`.
+  static bool isAttachmentPath(String vaultPath) {
+    final norm = normalizeRelative(vaultPath);
+    if (norm == null) return false;
+    final relative = stripNotesPrefix(norm);
+    if (relative == null) return false;
+    final segments = relative.split('/');
+    // The last segment is the file name; an `attachments` among the
+    // directories above it is what makes this an attachment.
+    return segments.sublist(0, segments.length - 1).contains(attachmentsDirName);
+  }
+
   /// True when [name] contains a character that cannot appear in a filename on
   /// Windows at all.
   ///

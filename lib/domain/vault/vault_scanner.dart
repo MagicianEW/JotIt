@@ -12,6 +12,7 @@ import '../../data/db/note_dao.dart';
 import '../../data/vault/note_file_store.dart';
 import '../entities/markdown_parser.dart';
 import '../entities/parsed_note.dart';
+import '../sync/attachment_policy.dart';
 import 'link_resolver.dart';
 
 /// What one pass of [VaultScanner.reindex] found.
@@ -140,8 +141,10 @@ class VaultScanner {
   static const Set<String> noteExtensions = {'.md', '.markdown'};
 
   /// Directory name whose contents are attachments rather than notes
-  /// (v3.0 §9.3).
-  static const String attachmentsDirName = 'attachments';
+  /// (v3.0 §9.3). The predicate lives in [VaultPaths.isAttachmentPath]
+  /// because the sync engine has to answer the same question, and two
+  /// disagreeing copies of it is how an image ends up in `_conflicts/`.
+  static const String attachmentsDirName = VaultPaths.attachmentsDirName;
 
   static const Set<String> _ignoredExtensions = {
     '.tmp', '.temp', '.part', '.partial', '.crdownload', '.download',
@@ -208,7 +211,7 @@ class VaultScanner {
           continue;
         }
 
-        if (_isAttachmentPath(rel)) {
+        if (VaultPaths.isAttachmentPath(path)) {
           attachments[path] = scanned;
           continue;
         }
@@ -564,11 +567,6 @@ class VaultScanner {
         VaultPaths.stripNotesPrefix(notePath) ?? notePath,
       );
 
-  bool _isAttachmentPath(String relativeToNotes) {
-    final segs = relativeToNotes.split('/');
-    return segs.sublist(0, segs.length - 1).contains(attachmentsDirName);
-  }
-
   Future<_LinkCounts> _rebuildLinks(
     DatabaseExecutor txn,
     String sourcePath,
@@ -681,7 +679,7 @@ class VaultScanner {
           'note_id': noteUid,
           'path': entry.key,
           'filename': p.posix.basename(entry.key),
-          'mime': _mimeFor(entry.key),
+          'mime': mimeTypeFor(entry.key),
           'size': entry.value.size,
           'content_hash': ContentHash.ofBytes(entry.value.bytes),
           'created_at': _now().millisecondsSinceEpoch,
@@ -708,26 +706,6 @@ class VaultScanner {
     }
     missing.sort();
     return missing;
-  }
-
-  static String _mimeFor(String path) {
-    switch (p.posix.extension(path).toLowerCase()) {
-      case '.png':
-        return 'image/png';
-      case '.jpg':
-      case '.jpeg':
-        return 'image/jpeg';
-      case '.gif':
-        return 'image/gif';
-      case '.webp':
-        return 'image/webp';
-      case '.svg':
-        return 'image/svg+xml';
-      case '.pdf':
-        return 'application/pdf';
-      default:
-        return 'application/octet-stream';
-    }
   }
 }
 

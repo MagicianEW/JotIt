@@ -894,8 +894,9 @@ class _MutateOnFirstGet extends DavClient {
     String path,
     List<int> bytes, {
     DavCondition condition = const DavUnconditional(),
+    String contentType = 'text/markdown; charset=utf-8',
   }) =>
-      _inner.put(path, bytes, condition: condition);
+      _inner.put(path, bytes, condition: condition, contentType: contentType);
 
   @override
   Future<void> ensureCollection(String collectionPath) =>

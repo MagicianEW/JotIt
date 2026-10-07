@@ -324,14 +324,21 @@ class DavClient {
   /// same path safe: whichever device arrives second gets 412 instead of
   /// silently overwriting the first device's note, and the decision matrix
   /// turns that into a path collision with two copies preserved.
+  ///
+  /// [contentType] defaults to Markdown because that is what a vault path
+  /// holds, and hard-coding it — which this used to do — silently mislabelled
+  /// every attachment as `text/markdown`. That is not cosmetic: the server
+  /// stores the type, hands it back on `GET`, and any other client reading the
+  /// vault is told the picture is a text file.
   Future<DavPutResult> put(
     String path,
     List<int> bytes, {
     DavCondition condition = const DavUnconditional(),
+    String contentType = 'text/markdown; charset=utf-8',
   }) async {
     final uri = urlFor(path);
     final headers = <String, String>{
-      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Type': contentType,
       'Content-Length': '${bytes.length}',
     };
     switch (condition) {

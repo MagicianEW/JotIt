@@ -12,6 +12,7 @@ import '../../data/db/pending_queue.dart';
 import '../../data/db/sync_meta_store.dart';
 import '../../data/db/sync_root_store.dart';
 import '../../domain/entities/front_matter_patcher.dart';
+import '../../domain/sync/attachment_policy.dart';
 import '../../domain/sync/conflict_writer.dart';
 import '../../domain/sync/decision_matrix.dart';
 import '../../domain/sync/remote_snapshot.dart';
@@ -27,6 +28,7 @@ class SyncBatchResult {
     this.conflicts = const <String>[],
     this.skipped = const <String>[],
     this.preconditionFailed = const <String>[],
+    this.attachmentViolations = const <String>[],
     this.error,
   });
 
@@ -49,6 +51,15 @@ class SyncBatchResult {
   /// otherwise be invisible forever.
   final List<String> preconditionFailed;
 
+  /// Attachments whose bytes differ from the remote copy (§5.5 / ADR-11).
+  ///
+  /// Separate from [conflicts] because nothing was copied: an immutable path
+  /// holding different bytes on the two sides is not a conflict to resolve, it
+  /// is an invariant that has been broken by something outside this app. Both
+  /// copies are still where they were, and the user is told which path to look
+  /// at.
+  final List<String> attachmentViolations;
+
   final String? error;
 
   bool get isEmpty =>
@@ -62,7 +73,8 @@ class SyncBatchResult {
   @override
   String toString() => 'SyncBatchResult(down ${downloaded.length}, '
       'up ${uploaded.length}, del ${deleted.length}, '
-      'conflict ${conflicts.length}, 412 ${preconditionFailed.length})';
+      'conflict ${conflicts.length}, 412 ${preconditionFailed.length}, '
+      'attach! ${attachmentViolations.length})';
 }
 
 /// One sync session (§5.2).
@@ -145,6 +157,7 @@ class SyncEngine {
 
       final base = await meta.allForRoot(syncRootId);
       final localPaths = (await notes.allActive()).map((n) => n.path).toList();
+      final localAttachments = await _referencedAttachmentPaths();
 
       final q = queue;
       final backlog = q != null && await q.countPending(syncRootId) > 0;
@@ -180,7 +193,11 @@ class SyncEngine {
       }
 
       final nothingToDo =
-          changes.isEmpty && !backlog && unsyncedLocal.isEmpty && locallyEdited.isEmpty;
+          changes.isEmpty &&
+              !backlog &&
+              unsyncedLocal.isEmpty &&
+              locallyEdited.isEmpty &&
+              _hasUnsyncedAttachments(localAttachments, base);
       if (nothingToDo) {
         machine.apply(SyncEvent.queueEmpty);
         machine.apply(SyncEvent.backoffElapsed);
@@ -193,6 +210,7 @@ class SyncEngine {
         snapshot: snapshot,
         base: base,
         localPaths: localPaths,
+        localAttachments: localAttachments,
         nowMs: nowMs,
       );
       machine.apply(SyncEvent.batchCompleted);
@@ -262,6 +280,7 @@ class SyncEngine {
     required RemoteSnapshot snapshot,
     required List<SyncMetaRecord> base,
     required List<String> localPaths,
+    required List<String> localAttachments,
     required int nowMs,
   }) async {
     final downloaded = <String>[];
@@ -273,29 +292,71 @@ class SyncEngine {
     // 412/409 is tracked apart from `skipped` — see SyncBatchResult.
     final preconditionFailed = <String>[];
 
+    // §5.5: an immutable file has no edit conflict, so it gets its own
+    // classifier instead of the note matrix. Sending one through that matrix
+    // is not a graceful degradation — a binary has no `uid` on either side,
+    // which is precisely that matrix's "refusing to overwrite without
+    // identity" row, so every attachment in the vault became a conflict copy
+    // while the note embedding it synced perfectly.
+    final attachmentViolations = <String>[];
+
     // Everything the matrix could have an opinion about: what the remote has,
     // what the base remembers, and **what only this device has**. Leaving the
     // local-only paths out is the bug that makes a brand new note invisible:
     // it is in neither the snapshot nor `sync_meta`, so it never reaches
     // `classifySync` and never gets uploaded.
+    //
+    // Attachments have to be in this set for the same reason and for one more:
+    // they are not rows in `notes`, so before they were added here a picture
+    // pasted into a note was invisible to the engine in *both* directions —
+    // local-only ones never left the device, and a vault's worth of images
+    // could not be uploaded at all.
+    final referenced = localAttachments.toSet();
     final paths = <String>{
       ...snapshot.entries.keys,
       ...base.map((r) => r.path),
       ...localPaths,
+      ...localAttachments,
     }.toList()
       ..sort();
-
-    final knownPaths = <String>{};
-    for (final record in base) {
-      final uid = record.uid;
-      if (uid != null && uid.isNotEmpty) knownPaths.add(uid);
-    }
 
     for (final path in paths) {
       final remote = snapshot.entries[path];
       if (remote != null && remote.isCollection) continue;
 
       final record = await meta.byPath(syncRootId, path);
+
+      if (VaultPaths.isAttachmentPath(path)) {
+        final outcome = await _syncAttachment(
+          path: path,
+          remote: remote,
+          record: record,
+          syncRootId: syncRootId,
+          nowMs: nowMs,
+          referencedByANote: referenced.contains(path),
+          knownToVault: referenced.contains(path),
+        );
+        switch (outcome) {
+          case _Outcome.downloaded:
+            downloaded.add(path);
+            await meta.clearRetry(syncRootId, path);
+          case _Outcome.uploaded:
+            uploaded.add(path);
+            await meta.clearRetry(syncRootId, path);
+          case _Outcome.deleted:
+            deleted.add(path);
+            await meta.clearRetry(syncRootId, path);
+          case _Outcome.immutableViolation:
+            attachmentViolations.add(path);
+          case _Outcome.conflicted:
+          case _Outcome.skipped:
+            skipped.add(path);
+          case _Outcome.retryNextRound:
+            preconditionFailed.add(path);
+        }
+        continue;
+      }
+
       final local = await notes.byPath(path, includeDeleted: true);
       final localBytes = await files.readBytesIfPresent(path);
 
@@ -344,6 +405,10 @@ class SyncEngine {
           skipped.add(path);
         case _Outcome.retryNextRound:
           preconditionFailed.add(path);
+        case _Outcome.immutableViolation:
+          // Unreachable here: attachment paths are diverted above. Present so
+          // that adding an outcome cannot quietly fall through and vanish.
+          attachmentViolations.add(path);
       }
     }
 
@@ -354,7 +419,190 @@ class SyncEngine {
       conflicts: conflicts,
       skipped: skipped,
       preconditionFailed: preconditionFailed,
+      attachmentViolations: attachmentViolations,
     );
+  }
+
+  /// Attachment paths this vault currently knows about, from the derived index.
+  ///
+  /// The `attachments` table is the right source and not merely a convenient
+  /// one: §9.3 defines an attachment as a file a note references, so the index
+  /// already answers the only question that matters — *is this file part of
+  /// the vault, or is it something lying around in `attachments/`?* — and it
+  /// answers it without a directory walk on every round.
+  ///
+  /// Files that exist but are referenced by nothing are deliberately absent,
+  /// and [classifyAttachment] treats their absence as a reason to leave them
+  /// alone in both directions.
+  Future<List<String>> _referencedAttachmentPaths() =>
+      notes.attachmentPaths();
+
+  /// True when at least one local attachment has no base row, so there is work
+  /// to do even when every note is in sync.
+  ///
+  /// Without this the round would short-circuit on "the remote looks
+  /// unchanged", which is precisely the state a newly pasted image sits in:
+  /// nothing on the server has moved, and nothing in `notes` has moved either.
+  bool _hasUnsyncedAttachments(
+      List<String> localAttachments, List<SyncMetaRecord> base) {
+    if (localAttachments.isEmpty) return false;
+    final based = {for (final r in base) r.path};
+    return localAttachments.any((p) => !based.contains(p));
+  }
+
+  /// §5.5. Everything about an immutable file that the note matrix must not be
+  /// asked to decide.
+  Future<_Outcome> _syncAttachment({
+    required String path,
+    required RemoteEntry? remote,
+    required SyncMetaRecord? record,
+    required String syncRootId,
+    required int nowMs,
+    required bool referencedByANote,
+    required bool knownToVault,
+  }) async {
+    final bytes = await files.readBytesIfPresent(path);
+    final localExists = bytes != null;
+    final localHash = bytes == null ? null : ContentHash.ofBytes(bytes);
+
+    // The remote checksum is only worth a download when a cheap pre-filter
+    // cannot rule out a change (§5.5: the *judgement* is SHA-256; the ETag is
+    // never the judgement, only a way to avoid re-reading bytes we already
+    // know). Skipped entirely when the file is absent locally, because the
+    // download case is going to fetch the bytes regardless.
+    final remoteHash = (remote != null && localExists)
+        ? await _remoteAttachmentHash(remote, record, localBytes: bytes)
+        : null;
+
+    final decision = classifyAttachment(AttachmentObservation(
+      path: path,
+      localExists: localExists,
+      localHash: localHash,
+      remoteExists: remote != null,
+      remoteHash: remoteHash,
+      baseHash: record?.baseContentHash,
+      referencedByANote: referencedByANote,
+      knownToVault: knownToVault,
+    ));
+
+    switch (decision) {
+      case AttachmentAction.nothingToDo:
+      case AttachmentAction.orphan:
+        return _Outcome.skipped;
+
+      case AttachmentAction.immutableViolation:
+        // Both copies stay exactly where they are. See the enum's own docs:
+        // overwriting is what C3 forbids, and copying a binary into a
+        // directory of Markdown gives the user two unreadable files and no
+        // way to tell which one is wrong.
+        return _Outcome.immutableViolation;
+
+      case AttachmentAction.download:
+        final remote2 = await dav.get(path);
+        if (remote2 == null) return _Outcome.skipped;
+        await files.writeAtomic(path, remote2);
+        await meta.commitBase(
+          syncRootId: syncRootId,
+          path: path,
+          // No uid: an attachment has no front matter, and ADR-2's logical
+          // identity does not exist for it. Its identity *is* the path, which
+          // is sound precisely because ADR-11 makes the content at that path
+          // immutable.
+          uid: null,
+          baseEtag: remote?.etag,
+          baseContentHash: ContentHash.ofBytes(remote2),
+          at: nowMs,
+        );
+        return _Outcome.downloaded;
+
+      case AttachmentAction.upload:
+        final local = bytes!;
+        final condition =
+            _conditionFor(action: SyncAction.uploadCreate, baseEtag: null);
+        var put = await dav.put(path, local,
+            condition: condition, contentType: mimeTypeFor(path));
+
+        if (put.statusCode == 409) {
+          // A missing folder, not a stale base — the same thing a note PUT can
+          // hit, and for the same reason: a vault that has never had a
+          // subfolder on the server yet.
+          await dav.ensureCollection(_parentOf(path));
+          put = await dav.put(path, local,
+              condition: condition, contentType: mimeTypeFor(path));
+        }
+
+        if (put.statusCode == 412) {
+          // `If-None-Match: *` said the path already exists. Combined with
+          // ADR-11 that means two devices generated the same `{uuid}.{ext}`,
+          // which is not a conflict to resolve and must not be resolved by
+          // overwriting. Report it and let a person look.
+          await meta.notePreconditionFailed(
+            syncRootId: syncRootId,
+            path: path,
+            error: 'HTTP 412（远端已有同名附件，未覆盖）',
+            at: nowMs,
+          );
+          return _Outcome.retryNextRound;
+        }
+        if (put.statusCode == 409) {
+          await meta.notePreconditionFailed(
+            syncRootId: syncRootId,
+            path: path,
+            error: 'HTTP 409（远端缺少所在的文件夹，重试后仍被拒绝）',
+            at: nowMs,
+          );
+          return _Outcome.retryNextRound;
+        }
+
+        await meta.commitBase(
+          syncRootId: syncRootId,
+          path: path,
+          uid: null,
+          baseEtag: put.etag ?? await _etagAfterWrite(path),
+          baseContentHash: localHash,
+          at: nowMs,
+        );
+        return _Outcome.uploaded;
+
+      case AttachmentAction.deleteRemote:
+        // Unconditional, on purpose. §5.5 judges by checksum and distrusts
+        // ETags for binary resources; guarding a delete of an immutable file
+        // with a token from that same unreliable implementation buys nothing
+        // and, on a server that returns weak tags, makes `DavClient.delete`
+        // throw on a path that is perfectly safe to remove.
+        try {
+          await dav.delete(path);
+        } on DavException catch (e) {
+          await meta.notePreconditionFailed(
+            syncRootId: syncRootId,
+            path: path,
+            error: 'HTTP ${e.statusCode} on DELETE',
+            at: nowMs,
+          );
+          return _Outcome.retryNextRound;
+        }
+        await meta.remove(syncRootId, path);
+        return _Outcome.deleted;
+    }
+  }
+
+  /// The remote's SHA-256, downloading only when the cheap signals disagree.
+  Future<String?> _remoteAttachmentHash(
+    RemoteEntry remote,
+    SyncMetaRecord? record, {
+    required List<int> localBytes,
+  }) async {
+    final baseHash = record?.baseContentHash;
+    if (baseHash != null &&
+        remote.contentLength == localBytes.length &&
+        remote.etag != null &&
+        remote.etag == record!.baseEtag) {
+      // Same length and the server's own token is unchanged: the bytes have
+      // not moved, so the recorded checksum is still true.
+      return baseHash;
+    }
+    final bytes = await dav.get(remote.path);
+    return bytes == null ? null : ContentHash.ofBytes(bytes);
   }
 
   Future<SyncObservation> _observe({
@@ -729,4 +977,8 @@ enum _Outcome {
   conflicted,
   skipped,
   retryNextRound,
+
+  /// §5.5: both sides hold different bytes at one immutable attachment path.
+  /// Reported, never resolved, never overwritten.
+  immutableViolation,
 }

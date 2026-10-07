@@ -78,6 +78,21 @@ class NoteDao {
   final Database? _db;
   final DatabaseExecutor _root;
 
+  /// Vault-relative paths of every attachment a note references.
+  ///
+  /// This is what §9.3 means by "an attachment": a file inside an
+  /// `attachments/` directory that some note links to. A file sitting there
+  /// with nothing pointing at it is deliberately not in this list, which is why
+  /// the sync engine treats an unreferenced one as untouchable rather than as
+  /// something to push or prune.
+  ///
+  /// Read rather than recomputed so the engine and the scanner cannot disagree
+  /// about which files belong to the vault.
+  Future<List<String>> attachmentPaths() async {
+    final rows = await _root.query('attachments', columns: <String>['path']);
+    return rows.map((r) => r['path']! as String).toList(growable: false);
+  }
+
   /// Runs [action] inside a transaction on this DAO's connection.
   ///
   /// Only valid when this DAO owns the connection; a DAO built with
