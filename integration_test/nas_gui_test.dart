@@ -9,7 +9,9 @@ import 'package:http/http.dart' as http;
 import 'package:integration_test/integration_test.dart';
 import 'package:jotit/app/providers.dart';
 import 'package:jotit/app/vault_locator.dart';
+import 'package:jotit/domain/sync/attachment_policy.dart';
 import 'package:jotit/main.dart';
+import 'package:jotit/ui/editor_page.dart';
 import 'package:path/path.dart' as p;
 
 /// The whole program, on a real machine, against a real WebDAV server.
@@ -219,6 +221,155 @@ void main() {
           reason: 'what came back is not what was written — ADR-1 says the '
               'file is the truth, so a lossy round trip is data loss');
     },
+    skip: !configured,
+  );
+
+  testWidgets(
+    'an attachment reaches the server byte for byte',
+    (tester) async {
+      // This is the case the note test above cannot reach. §5.5 sends
+      // attachments as a *stream* with a scaled timeout, and every one of
+      // those decisions only matters on a real socket to a real server: the
+      // buffered path and the streamed path look identical in a unit test
+      // that writes to an in-process fake.
+      //
+      // On the NAS this project actually syncs against, an 11.5 MB body takes
+      // about 205 s at roughly 56 KB/s. The budget that permits that
+      // (`DavClient.timeoutOverrideFor`) is exactly the thing that used to be
+      // too small, so this test is what would have caught it.
+      final davUrl = url!;
+      final davUser = user!;
+      final davPass = pass!;
+      final noteName = 'guatt-${DateTime.now().millisecondsSinceEpoch}';
+
+      // Deterministic pseudo-random bytes. A repeating pattern would let a
+      // length check pass while the content was subtly wrong.
+      final size = kLargeAttachmentBytes + 400000;
+      final source = File(p.join(sandbox.path, 'picture.png'));
+      final payload = Uint8List(size);
+      var x = 987654321;
+      for (var i = 0; i < size; i++) {
+        x = (1103515245 * x + 12345) & 0x7FFFFFFF;
+        payload[i] = (x >> 16) & 0xFF;
+      }
+      await source.writeAsBytes(payload, flush: true);
+
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          vaultLocatorProvider.overrideWith(
+            (ref) async => VaultLocator(
+              Directory(p.join(sandbox.path, 'support')),
+              documentsDir: Directory(p.dirname(vaultRoot.path)),
+            ),
+          ),
+        ],
+        child: const JotItApp(),
+      ));
+
+      await _settle(tester, find.text('库里还没有笔记'));
+      await tester.tap(find.text('新建'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('new-note-title')), noteName);
+      await tester.tap(find.text('创建'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('editor-body')), findsOneWidget);
+
+      // The picker is the only part that needs a platform channel, and its
+      // body is empty of anything to get wrong — everything after it is what
+      // this test is for.
+      final state = tester.state<EditorPageState>(find.byType(EditorPage));
+      await state.attachForTesting(source.path);
+      await tester.pumpAndSettle();
+
+      final attachmentsDir =
+          Directory(p.join(vaultRoot.path, 'notes', 'attachments'));
+      final copied = attachmentsDir.listSync().whereType<File>();
+      expect(copied, hasLength(1),
+          reason: 'the attachment belongs in the vault, not in the temp '
+              'directory it was picked from');
+      final stored = copied.single;
+      expect(await stored.readAsBytes(), payload,
+          reason: 'the copy that landed on disk has to be the whole file');
+
+      // Inserting an attachment marks the note dirty, so `PopScope` will not let
+      // the route close and `pageBack` raises the discard dialog. Save first —
+      // which is what the status line already told the user to do ("保存后同步"),
+      // and which the sync step below depends on anyway: an unsaved link never
+      // reaches the file, let alone the server.
+      //
+      // The button, not Ctrl+S. `CallbackShortcuts` wraps the `Scaffold`, so
+      // the shortcut only fires while focus is somewhere inside it, and
+      // calling the attach seam directly — as this test must — leaves focus
+      // where the test framework put it. Waiting on a shortcut that cannot
+      // arrive is how a test spends thirty seconds proving nothing.
+      await tester.tap(find.byIcon(Icons.save_outlined));
+      await _settleAny(tester, ['已保存', '内容没有变化', '保存失败'], seconds: 30);
+      expect(find.text('已保存'), findsOneWidget,
+          reason: 'the attachment was inserted but never written to disk, so '
+              'there would be nothing for the server to receive');
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      // Assert the way home rather than tapping a button and finding out
+      // where we were. The settings icon is on the list page, and
+      // "could not find icon" says nothing about why the page underneath was
+      // not the list page — it is what a dialog left open looks like.
+      expect(find.text('新建'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.settings_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('添加远端'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('root-name')), '测试 NAS');
+      await tester.enterText(
+          find.byKey(const ValueKey('root-url')), '$davUrl/JotIt/');
+      await tester.enterText(find.byKey(const ValueKey('root-user')), davUser);
+      await tester.enterText(find.byKey(const ValueKey('root-pass')), davPass);
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+
+      final storedName = p.basename(stored.path);
+      final remote = Uri.parse(
+          '$davUrl/JotIt/notes/attachments/${Uri.encodeComponent(storedName)}');
+      final noteRemote = Uri.parse(
+          '$davUrl/JotIt/notes/${Uri.encodeComponent('$noteName.md')}');
+      final auth = 'Basic ${base64Encode(utf8.encode('$davUser:$davPass'))}';
+
+      addTearDown(() async {
+        for (final u in <Uri>[remote, noteRemote]) {
+          try {
+            await http.delete(u, headers: {'Authorization': auth});
+          } on Object {
+            // A failed cleanup must not replace the real failure.
+          }
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      });
+
+      await tester.tap(find.byIcon(Icons.sync));
+      // Generous, and honestly so: the measured upload is ~205 s, and this
+      // waits for the UI to say the round finished rather than for a fixed
+      // count. A ceiling that is too tight here would report a slow server as
+      // a broken one — the very mistake this file's sibling made.
+      await _settle(tester, find.textContaining('上次同步'), seconds: 900);
+
+      expect(find.textContaining('同步失败'), findsNothing);
+      expect(find.textContaining('服务器拒绝了这些写入'), findsNothing);
+
+      final response = await http.get(remote, headers: {'Authorization': auth});
+      expect(response.statusCode, 200,
+          reason: 'GET $remote returned ${response.statusCode}');
+      expect(response.bodyBytes.length, payload.length,
+          reason: 'a short upload is the failure this test exists to rule out');
+      expect(response.bodyBytes, payload,
+          reason: '§5.5 judges attachments by SHA-256; a transfer that lands '
+              'the right length and the wrong bytes is still data loss');
+    },
+    // The whole point is that this takes minutes on a real server, which the
+    // integration binding's own default timeout will not allow.
+    timeout: const Timeout(Duration(minutes: 20)),
     skip: !configured,
   );
 }

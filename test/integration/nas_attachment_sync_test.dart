@@ -80,6 +80,19 @@ void main() {
     rootId = 'att-root';
     scratch = '_att-${DateTime.now().millisecondsSinceEpoch}-${scratchSeq++}';
 
+    // Sweep the previous run's leftovers **before** making a new one.
+    //
+    // The teardown below cleans up after a run that finishes. It does not run
+    // at all when `flutter test` kills a test at its timeout, which is
+    // exactly when a scratch collection is most expensive to leave behind —
+    // and it lands in the user's real library directory, not in %TEMP%.
+    // Three such directories were found there, all from the run that timed
+    // out on the 11 MB upload, which is why this sweeps on the way in.
+    //
+    // The prefix is what makes it safe: nothing a user creates starts with
+    // `_att-`, and this only ever deletes collections carrying it.
+    await _sweepScratch(Uri.parse(baseUrl), user, pass);
+
     // The scratch collection has to exist before the engine starts. mod_dav
     // does not create intermediate collections for a deep MKCOL, which the
     // engine relies on being true — it walks down one segment at a time
@@ -387,6 +400,51 @@ Future<void> _rmtree(Uri base, String scratch, String user, String pass) async {
     // Leaving a scratch collection behind is untidy, not dangerous.
     // ignore: avoid_print
     print('could not remove $scratch: $e');
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// Deletes every leftover `_att-*` collection directly under [base].
+///
+/// Runs before each test so that a run killed at its timeout does not leave
+/// its scratch collections in the user's real library forever. A teardown is
+/// the wrong place for this: `flutter test` does not run teardowns for a test
+/// it terminates at the timeout, which is precisely the run most likely to
+/// have been interrupted part-way through a large transfer.
+///
+/// Deliberately prefix-scoped. This runs against a directory a person owns,
+/// and the only thing standing between a sweeping cleanup and someone's data
+/// is that it will not touch a name that does not begin `_att-`.
+Future<void> _sweepScratch(Uri base, String user, String pass) async {
+  final client = HttpClient()
+    ..badCertificateCallback = (_, _, _) => true;
+  final auth = 'Basic ${base64Encode(utf8.encode('$user:$pass'))}';
+  final root = Uri.parse(
+      '${base.toString()}${base.toString().endsWith('/') ? '' : '/'}');
+  try {
+    final req = await client.openUrl('PROPFIND', root);
+    req.headers.set(HttpHeaders.authorizationHeader, auth);
+    req.headers.set('Depth', '1');
+    final res = await req.close();
+    if (res.statusCode != 207) return;
+    final body = await res.transform(utf8.decoder).join();
+
+    for (final m in RegExp(r'<[^>]*:?href>([^<]+)</').allMatches(body)) {
+      // Every `<D:href>` in a collection listing ends in a slash, and
+      // `'a/b/'.split('/').last` is the empty string — so the first version
+      // of this swept nothing at all while looking like it worked. `basename`
+      // on a trailing-slash path has the same trap.
+      final href = Uri.decodeComponent(m.group(1) ?? '');
+      final name = href.replaceFirst(RegExp(r'/+$'), '').split('/').last;
+      if (name.isEmpty || !name.startsWith('_att-')) continue;
+      await _rmtree(root, name, user, pass);
+    }
+  } on Object catch (e) {
+    // Not being able to sweep is a tidiness problem, and must never be the
+    // reason a test fails to start.
+    // ignore: avoid_print
+    print('could not sweep scratch collections: $e');
   } finally {
     client.close(force: true);
   }
