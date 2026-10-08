@@ -870,12 +870,12 @@ class _MutateOnFirstGet extends DavClient {
   bool _fired = false;
 
   @override
-  Future<List<int>?> get(String path) async {
+  Future<List<int>?> get(String path, {int? expectedLength}) async {
     if (!_fired) {
       _fired = true;
       await onFirstGet();
     }
-    return _inner.get(path);
+    return _inner.get(path, expectedLength: expectedLength);
   }
 
   @override

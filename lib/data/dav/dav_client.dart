@@ -139,20 +139,69 @@ class DavClient {
     Uri uri, {
     Map<String, String>? headers,
     List<int>? body,
+    Stream<List<int>>? bodyStream,
+    int? contentLength,
     Duration? timeoutOverride,
     Set<int> statusCodesAsResults = const <int>{},
+    void Function(int sent)? onProgress,
   }) async {
-    final request = http.Request(method, uri)
-      ..headers.addAll(_auth)
-      ..headers['User-Agent'] = _userAgent;
-    if (headers != null) request.headers.addAll(headers);
-    if (body != null) request.bodyBytes = body;
+    final http.BaseRequest request;
+    StreamSink<List<int>>? sink;
+    if (bodyStream != null) {
+      // §5.5: a large attachment is sent as a stream rather than as a
+      // buffer. The alternative is not "slower" — it is that a 200 MB video
+      // becomes a 200 MB allocation, which a phone will refuse and a desktop
+      // will survive only until two of them overlap.
+      final streamed = http.StreamedRequest(method, uri);
+      // Declared up front. Some servers reject a chunked body outright, and
+      // a `Content-Length` computed from the file costs nothing.
+      streamed.contentLength = contentLength;
+      sink = streamed.sink;
+      request = streamed;
+    } else {
+      final buffered = http.Request(method, uri);
+      if (body != null) buffered.bodyBytes = body;
+      request = buffered;
+    }
+    request.headers.addAll(_auth);
+    request.headers['User-Agent'] = _userAgent;
+    if (headers != null) {
+      for (final entry in headers.entries) {
+        // `package:http` owns this one on a `StreamedRequest`; writing it
+        // into `headers` as well makes the declared length and the declared
+        // length disagree, and the server is the one that has to guess.
+        if (entry.key.toLowerCase() == 'content-length') continue;
+        request.headers[entry.key] = entry.value;
+      }
+    }
 
     final http.Response response;
     try {
-      final streamed = await _http
-          .send(request)
-          .timeout(timeoutOverride ?? timeout);
+      // Start the request **before** feeding it. `StreamedRequest`'s sink
+      // buffers, and its `close()` future does not complete until a listener
+      // is attached to drain it — so awaiting the close before calling `send`
+      // is a deadlock, and it shows up as a sync round that never returns
+      // rather than as an exception. The order below is the documented one.
+      final sendFuture = _http.send(request);
+      if (sink != null) {
+        // `addStream`, not a manual `add` loop. The manual version looks
+        // equivalent and is not: it ignores the backpressure future, so a
+        // 200 MB body is queued in the controller's buffer while the socket
+        // drains a few kilobytes at a time — and under that load the transfer
+        // truncates mid-body and the server records a short file. `addStream`
+        // applies the pause the transport asks for and waits for the drain.
+        var sent = 0;
+        await sink.addStream(bodyStream!.map((chunk) {
+          sent += chunk.length;
+          // Bytes rather than a percentage: a percentage needs a total the
+          // caller may only learn partway through, and a progress bar that
+          // has to be re-based mid-flight is worse than one that counts up.
+          onProgress?.call(sent);
+          return chunk;
+        }));
+        await sink.close();
+      }
+      final streamed = await sendFuture.timeout(timeoutOverride ?? timeout);
       response = await http.Response.fromStream(streamed)
           .timeout(timeoutOverride ?? timeout);
     } on TimeoutException catch (e) {
@@ -307,10 +356,23 @@ class DavClient {
   }
 
   /// Contents of a file, or null when it does not exist.
-  Future<List<int>?> get(String path) async {
+  ///
+  /// [expectedLength] is a hint, not a requirement: it comes from the
+  /// `Content-Length` a PROPFIND already reported, so sizing the wait costs
+  /// nothing. It matters because the default 30 s is right for a note and
+  /// hopeless for a large attachment — the same asymmetry
+  /// [timeoutOverrideFor] exists to correct on the way up. Passing a wrong
+  /// value cannot corrupt anything; it can only make the wait longer or
+  /// shorter than ideal.
+  Future<List<int>?> get(String path, {int? expectedLength}) async {
     final uri = urlFor(path);
     try {
-      final response = await _send('GET', uri);
+      final response = await _send(
+        'GET',
+        uri,
+        timeoutOverride:
+            expectedLength == null ? null : timeoutOverrideFor(expectedLength),
+      );
       return response.bodyBytes;
     } on DavException catch (e) {
       if (e.statusCode == 404) return null;
@@ -341,6 +403,36 @@ class DavClient {
       'Content-Type': contentType,
       'Content-Length': '${bytes.length}',
     };
+    _applyCondition(headers, condition);
+
+    final response = await _send('PUT', uri,
+        headers: headers,
+        body: bytes,
+        timeoutOverride: const Duration(minutes: 2),
+        // Returned, not thrown: the caller has to be able to tell "the server
+        // refused this write because its base moved" (row 10) apart from "the
+        // write failed" and act on it.
+        statusCodesAsResults: const <int>{409, 412});
+
+    return DavPutResult(
+      statusCode: response.statusCode,
+      etag: response.headers['etag'],
+    );
+  }
+
+  /// Writes the precondition headers for [condition], or refuses to.
+  ///
+  /// Shared by the buffered and streamed writes so the two can never drift on
+  /// which servers they will talk to. Both refusals are deliberate:
+  ///
+  ///  * `If-Match` to a weak-ETag server. RFC 7232 requires strong
+  ///    comparison, so it can never succeed and `put` refuses to send it at
+  ///    all — an unguarded engine threw out of every upload round. The Synology
+  ///    box behind this returns `W/"31-..."` for files,
+  ///  * `If-None-Match: *` to a server that does not evaluate it, for the same
+  ///    reason: the write would be accepted regardless and the caller would
+  ///    believe it was protected.
+  void _applyCondition(Map<String, String> headers, DavCondition condition) {
     switch (condition) {
       case DavUnconditional():
         break;
@@ -370,15 +462,51 @@ class DavClient {
         }
         headers['If-None-Match'] = '*';
     }
+  }
 
-    final response = await _send('PUT', uri,
-        headers: headers,
-        body: bytes,
-        timeoutOverride: const Duration(minutes: 2),
-        // Returned, not thrown: the caller has to be able to tell "the server
-        // refused this write because its base moved" (row 10) apart from "the
-        // write failed" and act on it.
-        statusCodesAsResults: const <int>{409, 412});
+  /// Uploads a body as a stream (v3.0 §5.5).
+  ///
+  /// The distinction from [put] is not speed, it is that a 200 MB video is
+  /// never a 200 MB `Uint8List`. A small file streams too, for one reason: a
+  /// code path that only exists above a threshold is a code path that only
+  /// runs on the day it is least welcome.
+  ///
+  /// Takes a `Stream` rather than a `File` on purpose. This file deliberately
+  /// has no `dart:io` import — see `HttpDateParser` — so it stays testable on
+  /// every platform. The caller owns opening the file and owns hashing it,
+  /// which is the right way round anyway: the sync engine needs that hash to
+  /// record a merge base, and computing it during the read means the bytes are
+  /// touched once instead of twice.
+  ///
+  /// [contentLength] is declared up front rather than letting the request
+  /// chunk: some servers reject a chunked body outright, and a length is one
+  /// `stat()` away.
+  Future<DavPutResult> putStream(
+    String path,
+    Stream<List<int>> content, {
+    required int contentLength,
+    String contentType = 'application/octet-stream',
+    DavCondition condition = const DavUnconditional(),
+    void Function(int sent)? onProgress,
+    Duration? timeoutOverride,
+  }) async {
+    final uri = urlFor(path);
+    final headers = <String, String>{
+      'Content-Type': contentType,
+      'Content-Length': '$contentLength',
+    };
+    _applyCondition(headers, condition);
+
+    final response = await _send(
+      'PUT',
+      uri,
+      headers: headers,
+      bodyStream: content,
+      contentLength: contentLength,
+      timeoutOverride: timeoutOverride ?? timeoutOverrideFor(contentLength),
+      statusCodesAsResults: const <int>{409, 412},
+      onProgress: onProgress,
+    );
 
     return DavPutResult(
       statusCode: response.statusCode,
@@ -386,7 +514,48 @@ class DavClient {
     );
   }
 
-  /// Creates [collectionPath] and every missing folder above it.
+  /// How long a body of [contentLength] bytes is allowed to take.
+  ///
+  /// The rate assumption is the whole content of this function, and it is
+  /// **measured, not assumed**. Uploading to the Synology DSM box this project
+  /// syncs against, over the LAN, with `curl` as the probe:
+  ///
+  /// | body | wall clock | throughput |
+  /// |------|------------|------------|
+  /// | 500 KB | 9.0 s | 54 KB/s |
+  /// | 1 MB | 17.2 s | 57 KB/s |
+  /// | 2 MB | 29.9 s | 65 KB/s |
+  /// | 11.5 MB | 205 s | **56 KB/s** |
+  ///
+  /// That is roughly 3½ minutes per megabyte, so the budget below allots
+  /// **45 seconds per megabyte** — about thirteen times the measured worst
+  /// case, which is what a timeout needs to be: wrong in the direction of
+  /// waiting rather than of giving up. The earlier `2000` ms/megabyte granted
+  /// an 11 MB body 140 seconds and the transfer needed 205, so the client
+  /// aborted a transfer the server was in the middle of accepting. The
+  /// symptom is indistinguishable from a network fault — the attachment is
+  /// simply absent, with an error that says "timeout" and nothing about which
+  /// side was too slow.
+  ///
+  /// The two-minute floor stays, and so does the one-hour cap: past an hour a
+  /// stalled connection and a genuinely enormous file are indistinguishable,
+  /// and an unbounded wait turns one bad socket into a sync round that never
+  /// returns.
+  ///
+  /// Rounded **up**, deliberately. An 11.5 MB body is 10 whole megabytes plus
+  /// half, and `~/` threw that half away: the budget was calculated for 10 MB
+  /// and the body was 11.5 MB. Truncating here is how a function that scales
+  /// with the payload still under-grants by 13% at exactly the sizes where
+  /// the margin is already thinnest.
+  static Duration timeoutOverrideFor(int contentLength) {
+    final megabytes =
+        (contentLength + (1024 * 1024 - 1)) ~/ (1024 * 1024);
+    final ms = 120000 + megabytes * 45000;
+    return Duration(milliseconds: ms.clamp(120000, 3600000).toInt());
+  }
+
+
+/// Creates [collectionPath] and every missing folder above it.
   ///
   /// A `PUT` into a folder that does not exist comes back **409 Conflict**,
   /// and a 409 that nobody acts on means a brand new vault can never sync to

@@ -242,14 +242,28 @@ class SyncMetaStore {
     int? at,
   }) async {
     final root = _root;
-    await root.rawUpdate(
+    // Upsert, not update.
+    //
+    // An UPDATE can only annotate a row that already exists, and "this path
+    // was refused" is exactly the moment there is *no* row: a brand new note
+    // or attachment has never been synced, so `sync_meta` has nothing to
+    // update and the refusal lands nowhere. The path then appears in this
+    // round's list, the next round sees the same refusal, and it does so
+    // forever with no counter, no message and nothing for the Settings page to
+    // show — a note that never uploads and never says why.
+    //
+    // `base_etag` and `base_content_hash` stay NULL on insert. Inventing them
+    // would claim a merge base this device has never had, which is the one
+    // thing the row exists to record honestly.
+    await root.rawInsert(
       '''
-UPDATE sync_meta
-   SET retry_count = retry_count + 1,
-       last_error = ?,
-       last_synced_at = ?
- WHERE sync_root_id = ? AND path = ?''',
-      <Object?>[error, at, syncRootId, path],
+INSERT INTO sync_meta (sync_root_id, path, retry_count, last_error, last_synced_at, conflict_state)
+VALUES (?, ?, 1, ?, ?, ?)
+ON CONFLICT(sync_root_id, path) DO UPDATE SET
+  retry_count    = retry_count + 1,
+  last_error     = excluded.last_error,
+  last_synced_at = excluded.last_synced_at''',
+      <Object?>[syncRootId, path, error, at, ConflictState.none.wire],
     );
     final rows = await root.query('sync_meta',
         where: 'sync_root_id = ? AND path = ?',

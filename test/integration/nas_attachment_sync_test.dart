@@ -12,6 +12,7 @@ import 'package:jotit/data/db/sync_meta_store.dart';
 import 'package:jotit/data/db/sync_root_store.dart';
 import 'package:jotit/data/sync/sync_engine.dart';
 import 'package:jotit/data/vault/note_file_store.dart';
+import 'package:jotit/domain/sync/attachment_policy.dart';
 import 'package:jotit/domain/vault/vault_scanner.dart';
 
 /// §5.5 against the only server we have that disagrees with us on purpose.
@@ -120,7 +121,14 @@ void main() {
 
   tearDown(() async {
     await db.close();
-    if (vault.existsSync()) await vault.delete(recursive: true);
+    if (vault.existsSync()) {
+      try {
+        await vault.delete(recursive: true);
+      } on FileSystemException {
+        // A handle left open by a timed-out transfer must not turn the next
+        // test into a cascade of unrelated failures.
+      }
+    }
     await _rmtree(Uri.parse(baseUrl), scratch, user, pass);
   });
 
@@ -242,8 +250,44 @@ void main() {
         reason: 'and so is the local one');
   });
 
-  test('a fresh device receives the picture along with the note', () async {
-    // The direction this whole feature exists for. Device A writes both; a
+  test('a file past the 10 MB threshold streams up intact', () async {
+    // §5.5's large-file rule, against the only server that matters. A
+    // streamed `PUT` declares its `Content-Length` up front rather than
+    // chunking, and there is no test double for how mod_dav treats a body
+    // that arrives in many pieces: it can accept it and store a short file,
+    // which is the failure nobody notices until someone tries to open the
+    // attachment.
+    const note = 'notes/big.md';
+    const big = 'notes/attachments/big.bin';
+    final payload = List<int>.generate(kLargeAttachmentBytes + 250000,
+        (i) => (i * 31 + (i >> 8)) & 0x7F);
+
+    await writeNote(note, '---\nuid: u-big\n---\n\n![[attachments/big.bin]]\n',
+        uid: 'u-big');
+    await writeAttachment(big, payload);
+
+    final result = await run();
+
+    expect(result.error, isNull);
+    expect(result.uploaded, contains(big));
+    final back = await engine.dav.get(big);
+    expect(back, isNotNull);
+    expect(back!.length, payload.length,
+        reason: 'a short upload is the failure this test exists to rule out');
+    expect(ContentHash.ofBytes(back), ContentHash.ofBytes(payload));
+  },
+      // Measured, not guessed: `curl` to this server sustained ~56 KB/s on the
+      // way up (500 KB in 9 s, 2 MB in 30 s), so an 11.5 MB body takes about
+      // 3 minutes 25. The five minutes here is that plus the download and the
+      // surrounding round trips.
+      //
+      // This bound is also what caught the client-side bug this file now
+      // guards: at 140 s the client gave up on a transfer the server was
+      // still accepting, and the symptom was a bare timeout with no hint that
+      // the two sides disagreed about how long eleven megabytes takes.
+      timeout: const Timeout(Duration(minutes: 12)));
+
+  test('a fresh device receives the picture along with the note', () async {    // The direction this whole feature exists for. Device A writes both; a
     // second vault syncs against the same collection and must come away with
     // the note *and* the image, or the note arrives broken with nothing in
     // the UI saying so.

@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+
+import 'package:crypto/crypto.dart';
 
 
 import '../../core/content_hash.dart';
@@ -119,6 +122,17 @@ class SyncEngine {
   /// (v3.0 §9.3 rule 4). Injected so a test can drive a collision without
   /// staging megabytes.
   final NoteMover mover;
+
+  /// Where §5.5's progress for a large attachment goes.
+  ///
+  /// A broadcast controller rather than a callback so the UI can subscribe and
+  /// unsubscribe freely — a sync round outlives the screen that started it far
+  /// more often than anyone expects, and a callback captured by a disposed
+  /// widget is a crash rather than a missing update.
+  ///
+  /// Null when nobody is listening, which is the common case for a round that
+  /// touches no attachment.
+  StreamController<AttachmentProgress>? attachmentProgress;
 
   final SyncStateMachine machine = SyncStateMachine();
 
@@ -505,7 +519,12 @@ class SyncEngine {
         return _Outcome.immutableViolation;
 
       case AttachmentAction.download:
-        final remote2 = await dav.get(path);
+        // The size comes from the PROPFIND that already told us this file
+        // exists, so the wait scales with the body for free. Without it a
+        // large attachment runs into the client's 30-second default and is
+        // reported as a failed download on a perfectly good connection.
+        final remote2 =
+            await dav.get(path, expectedLength: remote?.contentLength);
         if (remote2 == null) return _Outcome.skipped;
         await files.writeAtomic(path, remote2);
         await meta.commitBase(
@@ -523,22 +542,42 @@ class SyncEngine {
         return _Outcome.downloaded;
 
       case AttachmentAction.upload:
-        final local = bytes!;
         final condition =
             _conditionFor(action: SyncAction.uploadCreate, baseEtag: null);
-        var put = await dav.put(path, local,
-            condition: condition, contentType: mimeTypeFor(path));
+        // Streamed rather than buffered (v3.0 §5.5). The distinction is not
+        // speed: a 200 MB video sent from a buffer is a 200 MB allocation,
+        // which is fine on a desktop and a process kill on a phone. The file
+        // is hashed on the way past, so it is read once and the checksum that
+        // becomes the merge base is the checksum of what actually went over
+        // the wire.
+        final upload = await _streamAttachment(path: path, condition: condition);
 
-        if (put.statusCode == 409) {
+        if (upload.put.statusCode == 409) {
           // A missing folder, not a stale base — the same thing a note PUT can
           // hit, and for the same reason: a vault that has never had a
           // subfolder on the server yet.
           await dav.ensureCollection(_parentOf(path));
-          put = await dav.put(path, local,
-              condition: condition, contentType: mimeTypeFor(path));
+          final retry = await _streamAttachment(path: path, condition: condition);
+          if (retry.put.statusCode == 409 || retry.put.statusCode == 412) {
+            await meta.notePreconditionFailed(
+              syncRootId: syncRootId,
+              path: path,
+              error: 'HTTP ${retry.put.statusCode}'
+                  '${retry.put.statusCode == 409 ? '（远端缺少所在的文件夹，重试后仍被拒绝）' : '（远端已有同名附件，未覆盖）'}',
+              at: nowMs,
+            );
+            return _Outcome.retryNextRound;
+          }
+          return _commitAttachment(
+            path: path,
+            streamed: retry,
+            fallbackHash: localHash,
+            syncRootId: syncRootId,
+            nowMs: nowMs,
+          );
         }
 
-        if (put.statusCode == 412) {
+        if (upload.put.statusCode == 412) {
           // `If-None-Match: *` said the path already exists. Combined with
           // ADR-11 that means two devices generated the same `{uuid}.{ext}`,
           // which is not a conflict to resolve and must not be resolved by
@@ -551,25 +590,14 @@ class SyncEngine {
           );
           return _Outcome.retryNextRound;
         }
-        if (put.statusCode == 409) {
-          await meta.notePreconditionFailed(
-            syncRootId: syncRootId,
-            path: path,
-            error: 'HTTP 409（远端缺少所在的文件夹，重试后仍被拒绝）',
-            at: nowMs,
-          );
-          return _Outcome.retryNextRound;
-        }
 
-        await meta.commitBase(
-          syncRootId: syncRootId,
+        return _commitAttachment(
           path: path,
-          uid: null,
-          baseEtag: put.etag ?? await _etagAfterWrite(path),
-          baseContentHash: localHash,
-          at: nowMs,
+          streamed: upload,
+          fallbackHash: localHash,
+          syncRootId: syncRootId,
+          nowMs: nowMs,
         );
-        return _Outcome.uploaded;
 
       case AttachmentAction.deleteRemote:
         // Unconditional, on purpose. §5.5 judges by checksum and distrusts
@@ -591,6 +619,107 @@ class SyncEngine {
         await meta.remove(syncRootId, path);
         return _Outcome.deleted;
     }
+  }
+
+  /// Sends [path] without ever holding the whole file in memory, hashing on the
+  /// way past (v3.0 §5.5).
+  ///
+  /// Hashing during the read is not an optimisation: the checksum that becomes
+  /// the merge base has to be the checksum of what the server holds. Reading
+  /// the file twice — once to hash, once to send — opens a window in which the
+  /// file changes and the base records a checksum the server never saw.
+  Future<_StreamedPut> _streamAttachment({
+    required String path,
+    required DavCondition condition,
+  }) async {
+    final file = files.fileFor(path);
+    if (file == null) {
+      return const _StreamedPut(DavPutResult(statusCode: 404, etag: null), null, 0);
+    }
+
+    final length = await file.length();
+    final digest = _HashSink();
+    final hashing = sha256.startChunkedConversion(digest);
+
+    try {
+      final put = await dav.putStream(
+        path,
+        // `openRead()` with **no** buffer size, and the reason is not
+        // tidiness. On Dart 3.13.5 / Windows, `File.openRead(n)` silently
+        // drops the last `n` bytes of the file: measured on a 300 000-byte
+        // file, `openRead(8192)` delivered 291 808 bytes and `openRead(262144)`
+        // delivered 37 856 — the same file read whole with no argument. The
+        // upload then dies with "Content size below specified contentLength",
+        // or, worse on a chunked server that does not check, ships a truncated
+        // attachment that nobody notices until someone tries to open it.
+        //
+        // The default already reads in 64 KB chunks, which is the bound this
+        // code wanted anyway.
+        file.openRead().map((chunk) {
+          hashing.add(chunk);
+          return chunk;
+        }),
+        contentLength: length,
+        contentType: mimeTypeFor(path),
+        condition: condition,
+        onProgress: (sent) => _publishProgress(AttachmentProgress(
+          path: path,
+          transferred: sent,
+          total: length,
+          direction: 'upload',
+        )),
+      );
+      hashing.close();
+      return _StreamedPut(put, digest.hex, length);
+    } on Object {
+      // Closing on the failure path too: an unclosed converter keeps the
+      // partial digest alive and reports the stream as unfinished.
+      hashing.close();
+      rethrow;
+    }
+  }
+
+  void _publishProgress(AttachmentProgress progress) {
+    final stream = attachmentProgress;
+    if (stream == null || stream.isClosed) return;
+    stream.add(progress);
+  }
+
+  Future<_Outcome> _commitAttachment({
+    required String path,
+    required _StreamedPut streamed,
+    required String? fallbackHash,
+    required String syncRootId,
+    required int nowMs,
+  }) async {
+    // The checksum of the bytes that actually went over the wire. The fallback
+    // is only for the case where the digest never finished, and it is the
+    // hash taken from the file's own bytes a moment earlier — not a guess.
+    final sha256 = streamed.sha256 ?? fallbackHash;
+    if (sha256 == null) return _Outcome.skipped;
+
+    await meta.commitBase(
+      syncRootId: syncRootId,
+      path: path,
+      uid: null,
+      baseEtag: streamed.put.etag ?? await _etagAfterWrite(path),
+      baseContentHash: sha256,
+      at: nowMs,
+    );
+    final stream = attachmentProgress;
+    if (stream != null && !stream.isClosed) {
+      // The closing tick reports the same byte count the last progress tick
+      // did. Reporting zero here would be the one tick that moves backwards,
+      // and a consumer that computes a speed or a percentage from the delta
+      // would show a nonsense spike at exactly the wrong moment.
+      stream.add(AttachmentProgress(
+        path: path,
+        transferred: streamed.bytes,
+        total: streamed.bytes,
+        direction: 'done',
+      ));
+    }
+    return _Outcome.uploaded;
   }
 
   /// The remote's SHA-256, downloading only when the cheap signals disagree.
@@ -1063,8 +1192,39 @@ Future<String?> _etagAfterWrite(String path) async {
   String get conflictsRoot => VaultPaths.conflictsRoot(vaultRoot);
 }
 
-enum _Outcome {
-  downloaded,
+/// A streamed `PUT` and the checksum of what actually went over the wire.
+class _StreamedPut {
+  const _StreamedPut(this.put, this.sha256, this.bytes);
+
+  final DavPutResult put;
+
+  /// Null when the file vanished between classification and upload.
+  final String? sha256;
+
+  /// How many bytes went out, so the closing progress tick can report the
+  /// same number rather than resetting to zero.
+  final int bytes;
+}
+
+/// Collects the finished digest from a chunked SHA-256 conversion.
+///
+/// `package:crypto` 3.x does not export an accumulator sink, and the reason
+/// one is needed here rather than at the end of the transfer is that the
+/// checksum has to be of the bytes that went on the wire — see
+/// [_streamAttachment].
+class _HashSink implements Sink<Digest> {
+  Digest? _digest;
+
+  String get hex => _digest?.toString() ?? '';
+
+  @override
+  void add(Digest data) => _digest = data;
+
+  @override
+  void close() {}
+}
+
+enum _Outcome {  downloaded,
   uploaded,
   deleted,
   conflicted,
