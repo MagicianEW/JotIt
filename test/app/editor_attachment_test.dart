@@ -59,6 +59,15 @@ void main() {
     return f;
   }
 
+  Future<void> settle(WidgetTester tester) async {
+    await tester.runAsync(() async {
+      for (var i = 0; i < 30; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+  }
+
   /// Boots the editor with a note open and hands back its state.
   Future<EditorPageState> openEditor(WidgetTester tester) async {
     await tester.runAsync(() async {
@@ -77,16 +86,13 @@ void main() {
       }
     });
     final state = tester.state<EditorPageState>(find.byType(EditorPage));
+    // The editor opens in preview; these tests verify the raw text field, so
+    // switch to source mode before anything inspects the buffer.
+    await tester.tap(find.byKey(const ValueKey('editor-view-menu')));
+    await settle(tester);
+    await tester.tap(find.text('源码'));
+    await settle(tester);
     return state;
-  }
-
-  Future<void> settle(WidgetTester tester) async {
-    await tester.runAsync(() async {
-      for (var i = 0; i < 30; i++) {
-        await tester.pump(const Duration(milliseconds: 50));
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-    });
   }
 
   testWidgets('inserting a picture puts the file in the vault and the link '
@@ -97,8 +103,7 @@ void main() {
     await tester.runAsync(() => state.attachForTesting(png.path));
     await settle(tester);
 
-    final attachments = Directory(p.join(root.path, 'notes', 'attachments'));
-    expect(attachments.existsSync(), isTrue,
+    final attachments = Directory(p.join(root.path, 'notes', 'attachments'));    expect(attachments.existsSync(), isTrue,
         reason: '§9.3: the file goes into an attachments folder beside the '
             'note');
 

@@ -59,6 +59,11 @@ class OpenNote extends Notifier<String?> {
   @override
   String? build() => null;
 
+  // No invalidation lives here on purpose: from this Notifier's ref,
+  // invalidating editableNoteProvider reads as a circular dependency (that
+  // provider watches this one). Staleness is broken where it is caused —
+  // every mutation bumps notesVersionProvider, which editableNoteProvider
+  // watches — not where the file happens to be opened.
   void open(String? path) => state = path;
 }
 
@@ -96,6 +101,12 @@ final searchResultsProvider =
 
 final editableNoteProvider = FutureProvider<EditableNote?>((ref) async {
   final session = await ref.watch(vaultProvider.future);
+  // Every mutation bumps this version — the user's own saves and anything
+  // the sync engine writes back. Watching it is what makes "open → edit →
+  // save → close → open again" read the file as it is now: without this the
+  // provider re-runs only when the open path changes, and reopening the
+  // same path re-served the pre-save text.
+  ref.watch(notesVersionProvider);
   final path = ref.watch(openNoteProvider);
   if (path == null) return null;
   return session.readForEdit(path);

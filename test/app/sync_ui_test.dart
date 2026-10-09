@@ -263,4 +263,81 @@ void main() {
     expect(find.text('尚未配置远端'), findsOneWidget);
     expect(await read(tester, () => vault.roots.enabled()), isEmpty);
   });
+
+  /// Opens the edit dialog of the one configured remote.
+  Future<void> editRemote(WidgetTester tester) async {
+    await act(tester, () async {
+      await tester.tap(find.text('测试 NAS'));
+      for (var i = 0;
+          i < 20 && find.text('编辑远端').evaluate().isEmpty;
+          i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }, pumps: 10);
+  }
+
+  testWidgets('editing a remote without typing a password keeps the saved one',
+      (tester) async {
+    await openSettings(tester);
+    await addRemote(tester, '${dav.baseUri()}');
+
+    await editRemote(tester);
+    await act(tester, () async {
+      // A URL fix is the edit the user came to make; the password field is
+      // deliberately left empty.
+      await tester.enterText(
+          find.byKey(const ValueKey('root-url')), 'http://127.0.0.1:9/dav/');
+      await tester.tap(find.text('保存'));
+    }, pumps: 30);
+
+    final roots = await read(tester, () => vault.roots.enabled());
+    expect(roots, hasLength(1));
+    expect(roots.single.baseUrl, 'http://127.0.0.1:9/dav/',
+        reason: 'the edit itself must have taken effect');
+    expect(await read(tester, () => vault.passwordFor(roots.single)), 'test',
+        reason: '"留空表示不改动已保存的密码" is the helper text the dialog '
+            'itself prints; wiping the credential here is the bug');
+  });
+
+  testWidgets('a malformed URL is stopped at the form, not on the wire',
+      (tester) async {
+    await openSettings(tester);
+
+    await act(tester, () async {
+      await tester.tap(find.text('添加远端'));
+      for (var i = 0;
+          i < 20 && find.byKey(const ValueKey('root-pass')).evaluate().isEmpty;
+          i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await tester.enterText(find.byKey(const ValueKey('root-name')), '坏地址');
+      // The exact input a real user typed: a doubled scheme. It parses as a
+      // Uri with host `http`, which is why the old validator let it through.
+      await tester.enterText(find.byKey(const ValueKey('root-url')),
+          'http://http//nas.example.com:35115/webDAV');
+      await tester.enterText(find.byKey(const ValueKey('root-user')), 'testuser');
+      await tester.enterText(find.byKey(const ValueKey('root-pass')), 'x');
+      await tester.tap(find.text('保存'));
+      // Give the validation pass a pump to surface the inline error.
+      await tester.pump(const Duration(milliseconds: 50));
+    }, pumps: 5);
+
+    // The dialog stayed open and said why, in the user's language.
+    expect(find.textContaining('地址格式不对'), findsOneWidget);
+    expect(find.byKey(const ValueKey('root-pass')), findsOneWidget);
+    expect(await read(tester, () => vault.roots.enabled()), isEmpty,
+        reason: 'nothing may be persisted from a form that refused to save');
+
+    // Fixing the address lets the same dialog through.
+    await act(tester, () async {
+      await tester.enterText(find.byKey(const ValueKey('root-url')),
+          '${dav.baseUri()}');
+      await tester.tap(find.text('保存'));
+    }, pumps: 30);
+
+    final roots = await read(tester, () => vault.roots.enabled());
+    expect(roots, hasLength(1));
+  });
 }

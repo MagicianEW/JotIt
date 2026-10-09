@@ -5,7 +5,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/core/content_hash.dart';
 import 'package:jotit/data/dav/dav_capabilities.dart';
-import 'package:jotit/data/dav/dav_client.dart';import 'package:jotit/data/dav/dav_multistatus.dart';
+import 'package:jotit/data/dav/dav_client.dart';
+import 'package:jotit/data/dav/dav_exception.dart';import 'package:jotit/data/dav/dav_multistatus.dart';
 import 'package:jotit/data/db/jotit_database.dart';
 import 'package:jotit/data/db/note_dao.dart';
 import 'package:jotit/data/db/sync_meta_store.dart';
@@ -294,6 +295,46 @@ void main() {
       // which is the whole point of ADR-11 — so nothing was sent at all.
       expect(spy.rangeHeaders, isEmpty);
     });
+
+    test('a transfer that dies mid-flight is recorded, not thrown away',
+        () async {
+      // §5.5: "失败时记录 `next_attempt_at`，重试为整文件重传". The failure this
+      // describes is the ordinary one on a real link — a socket that drops
+      // halfway through eleven megabytes, a timeout, a captive portal — and
+      // none of them arrive as an HTTP status. They arrive as a thrown
+      // `DavException` from the transport.
+      //
+      // The refusal cases above only cover statuses the server actually
+      // returned. This one covers the transfer that never got to return one,
+      // and it must land in the same place: the path recorded, the reason
+      // recorded, the local file untouched.
+      await seedNoteAndAttachment(big);
+      final broken = _CountingClient(dav.client(), throwOnPutWith: 'socket');
+      final failing = SyncEngine(
+        dav: broken,
+        files: files,
+        notes: NoteDao(db.db),
+        meta: SyncMetaStore(db.db),
+        roots: SyncRootStore(db.db),
+        vaultRoot: vault.path,
+      );
+      now += 1000;
+
+      final result = await failing.run(syncRootId: rootId, nowMs: now);
+
+      expect(result.error, isNull,
+          reason: 'one attachment failing must not abandon the whole round — '
+              'every other path in the vault still has work to do');
+      expect(result.preconditionFailed, contains(attachmentPath),
+          reason: 'the path has to be remembered, or it is never retried and '
+              'the attachment is simply never uploaded');
+      final record = await SyncMetaStore(db.db).byPath(rootId, attachmentPath);
+      expect(record?.lastError, contains('socket'),
+          reason: 'the user has to be able to read what went wrong');
+      expect(await files.readBytesIfPresent(attachmentPath), big,
+          reason: 'a half-sent transfer must not damage the local file; the '
+              'retry re-sends it whole precisely because this still holds');
+    });
   });
 
   group('size threshold', () {
@@ -370,10 +411,11 @@ void main() {
 
 }
 
-/// A client that can be told to refuse writes, and that records what was
-/// fetched and whether any ranged request was ever attempted.
+/// A client that can be told to refuse writes or to fail mid-transfer, and
+/// that records what was fetched and whether any ranged request was attempted.
 class _CountingClient extends DavClient {
-  _CountingClient(DavClient inner, {this.refusePutsWith})
+  _CountingClient(DavClient inner,
+      {this.refusePutsWith, this.throwOnPutWith})
       : _inner = inner,
         super(
           baseUri: inner.baseUri,
@@ -388,6 +430,12 @@ class _CountingClient extends DavClient {
   /// reaching the server — the seam that makes §5.5's refusal path testable
   /// without having to win a real race.
   final int? refusePutsWith;
+
+  /// When set, every streamed PUT throws a [DavException] carrying this reason
+  /// instead of reaching the server — the seam for the failure that arrives
+  /// with no status code at all, which is what a dropped socket or a timeout
+  /// actually looks like.
+  final String? throwOnPutWith;
 
   final _gets = <String>[];
 
@@ -442,6 +490,27 @@ class _CountingClient extends DavClient {
           onProgress?.call(sent);
         }
         return DavPutResult(statusCode: refusal, etag: null);
+      }();
+    }
+    final thrown = throwOnPutWith;
+    if (thrown != null) {
+      // Part of the body goes out before the connection dies, because that is
+      // the case that matters: the engine must not assume a transfer that
+      // failed part-way left nothing behind on the server.
+      return () async {
+        var sent = 0;
+        await for (final chunk in content) {
+          sent += chunk.length;
+          onProgress?.call(sent);
+          if (sent > 64 * 1024) {
+            throw DavException(
+              method: 'PUT',
+              uri: _inner.urlFor(path),
+              reason: thrown,
+            );
+          }
+        }
+        return DavPutResult(statusCode: 200, etag: null);
       }();
     }
     rangeHeaders.add(null);

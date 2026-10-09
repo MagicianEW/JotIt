@@ -153,6 +153,13 @@ class NoteFileStore {
     if (!isValidUtf8(bytes)) return null;
 
     final text = utf8.decode(bytes);
+    // "Ensure" means add when missing. The uid is the note's identity across
+    // devices (ADR-2): re-stamping an existing one on every save would make
+    // the identity drift with each keystroke saved, and the sync engine —
+    // which matches on uid — would see every note as a new note.
+    final existing = FrontMatterPatcher.readString(text, 'uid');
+    if (existing != null && existing.trim().isNotEmpty) return null;
+
     final patched = FrontMatterPatcher.withUid(text, uid);
     if (patched == text) return null;
 

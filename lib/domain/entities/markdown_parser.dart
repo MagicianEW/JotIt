@@ -1,3 +1,4 @@
+import 'package:jotit/domain/entities/front_matter_patcher.dart';
 import 'package:jotit/domain/entities/parsed_note.dart';
 import 'package:yaml/yaml.dart';
 
@@ -238,6 +239,25 @@ class MarkdownParser {
       final m = RegExp(r'^\s{0,3}#\s+(.*\S)\s*$').firstMatch(line);
       if (m != null) return m.group(1)!.trim();
     }
+    return fallback;
+  }
+
+  /// The display title for a whole note's text, without the cost of a full
+  /// [parse]. The UI (editor app bar) calls this on rebuilds, so the front
+  /// matter read is the lightweight [FrontMatterPatcher] one and the H1 scan
+  /// is a single multiline match instead of a line split.
+  ///
+  /// Same priority as [_resolveTitle]: anything that renders in the list and
+  /// in the editor must agree, or the user sees one name on screen and
+  /// another on the tile — which reads as "it renamed my note".
+  static String resolveTitle(String raw, {required String fallback}) {
+    final t = FrontMatterPatcher.readString(raw, 'title');
+    if (t != null && t.trim().isNotEmpty) return t.trim();
+
+    final body = const MarkdownParser().splitFrontMatter(raw).body;
+    final m = RegExp(r'^\s{0,3}#\s+(.*\S)\s*$', multiLine: true)
+        .firstMatch(body);
+    if (m != null) return m.group(1)!.trim();
     return fallback;
   }
 

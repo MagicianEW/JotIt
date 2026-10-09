@@ -4,13 +4,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:uuid/uuid.dart';
 
 import '../app/providers.dart';
 import '../app/sync_controller.dart';
 import '../app/vault_session.dart';
 import '../data/db/sync_root_store.dart';
 import '../domain/sync/conflict_writer.dart';
+import 'remote_form.dart';
 
 /// Settings: where the vault is, which remotes exist, and what is waiting.
 ///
@@ -259,14 +259,14 @@ Future<void> _editRoot(
   }
 
   final raw = result.url.trim();
-  final normalised = raw.endsWith('/') ? raw : '$raw/';
-  final record = SyncRootRecord(
-    id: existing?.id ?? const Uuid().v4(),
+  // buildRemoteRecord (not a fresh constructor): editing used to wipe the
+  // saved password — and the CTag, backoff state and last error with it —
+  // because the record it upserted carried none of them. See remote_form.dart.
+  final record = buildRemoteRecord(
+    existing: existing,
     name: result.name.trim(),
-    baseUrl: normalised,
+    url: raw,
     username: result.username.trim().isEmpty ? null : result.username.trim(),
-    capabilities: existing?.capabilities ?? const <String, Object?>{},
-    enabled: existing?.enabled ?? true,
   );
 
   await session.roots.upsert(record);
@@ -363,21 +363,18 @@ class _RemoteDialogState extends State<_RemoteDialog> {
                 controller: _url,
                 decoration: const InputDecoration(
                   labelText: 'WebDAV 地址',
-                  hintText: 'http://192.168.1.100:35115/webDAV/JotIt/',
+                  hintText: 'http://nas.example.com:35115/webDAV/JotIt/',
                 ),
-                validator: (v) {
-                  final u = Uri.tryParse(v?.trim() ?? '');
-                  if (u == null || !u.hasScheme || u.host.isEmpty) {
-                    return '需要一个完整的 http/https 地址';
-                  }
-                  return null;
-                },
+                validator: validateWebDavUrl,
               ),
               TextFormField(
                 key: const ValueKey('root-user'),
                 controller: _user,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '用户名（可留空）',
+                  helperText: widget.existing == null
+                      ? null
+                      : '留空表示不改动已保存的用户名',
                 ),
               ),
               TextFormField(

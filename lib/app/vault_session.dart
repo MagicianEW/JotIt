@@ -20,6 +20,7 @@ import '../data/sync/sync_engine.dart';
 import '../data/vault/note_file_store.dart';
 import '../domain/entities/front_matter_patcher.dart';
 import '../domain/vault/attachment_writer.dart';
+import '../domain/vault/link_resolver.dart';
 import '../domain/vault/vault_scanner.dart';
 import 'app_lock.dart';
 import 'credential_cipher.dart';
@@ -130,6 +131,14 @@ class VaultSession {
   Future<ReindexResult> reindex() =>
       VaultScanner(database: db, fileStore: files).reindex();
 
+  /// Link graph snapshot for the preview's wiki-link resolution.
+  ///
+  /// One query, no reindex: the preview only needs path<->uid tables, and a
+  /// stale-by-one-save index shows at worst a wrong "未找到笔记" snackbar,
+  /// never wrong bytes.
+  Future<LinkIndex> loadLinkIndex() =>
+      VaultScanner(database: db, fileStore: files).loadLinkIndex();
+
   /// Inserts a file into the vault as an attachment of [notePath] (v3.0 §9.3)
   /// and reindexes so the new file is known immediately.
   ///
@@ -208,26 +217,48 @@ class VaultSession {
     );
   }
 
+  /// Rolling backup for rich-text saves: copies the file exactly as it is on
+  /// disk to `.jotit/backups/<note-path>.bak`, overwriting the previous
+  /// backup. After this call the backup always holds the *previous* save —
+  /// one file, always the version before the one being written now. The
+  /// `.jotit` tree is local-only, so backups never sync.
+  Future<void> backupBeforeRichSave(String notePath) async {
+    final bytes = await files.readBytesIfPresent(notePath);
+    if (bytes == null) return; // nothing on disk yet — nothing to keep
+
+    final rel = VaultPaths.stripNotesPrefix(notePath) ?? notePath;
+    final bak = File(p.join(VaultPaths.appRoot(vaultRoot), 'backups',
+        '$rel.bak'));
+    await bak.parent.create(recursive: true);
+    await bak.writeAsBytes(bytes, flush: true);
+  }
+
+  /// A rich-text save: back up the current file first, then write. The
+  /// serialiser normalises formatting (the agreed waiver), so this is the
+  /// one save path where the previous version is kept around on purpose.
+  ///
+  /// A no-op save (the composed text matches the file byte for byte) writes
+  /// nothing and rolls nothing — the backup keeps holding the version before
+  /// the last real save.
+  Future<String?> saveRich(String notePath, String text) async {
+    if (await _composedSaveText(notePath, text) == null) return null;
+    await backupBeforeRichSave(notePath);
+    return save(notePath, text);
+  }
+
   /// Writes edited text back and returns the new content hash.
   ///
   /// Null means nothing was written, because the bytes came out identical. The
   /// sync engine reads that hash as "the user edited this note", so a save
   /// that produces the same file must not look like an edit.
   Future<String?> save(String notePath, String text) async {
+    final composed = await _composedSaveText(notePath, text);
+    if (composed == null) return null;
     final before = await files.readBytesIfPresent(notePath);
-    if (before != null && NoteFileStore.isValidUtf8(before)) {
-      final stripped = before.length >= 3 &&
-              before[0] == 0xEF &&
-              before[1] == 0xBB &&
-              before[2] == 0xBF
-          ? before.sublist(3)
-          : before;
-      if (utf8.decode(stripped) == text) return null;
-    }
 
     final bytes = before == null
-        ? utf8.encode(text)
-        : await files.encodeLike(originalBytes: before, text: text);
+        ? utf8.encode(composed)
+        : await files.encodeLike(originalBytes: before, text: composed);
     await files.writeAtomic(notePath, bytes);
     // ADR-2: identity lives in the file, so a note the user created here must
     // carry one before it is ever offered to the sync engine.
@@ -236,6 +267,32 @@ class VaultSession {
 
     final after = await files.readBytesIfPresent(notePath);
     return after == null ? null : ContentHash.ofBytes(after);
+  }
+
+  /// Composes the text a save would write — inheriting the file's existing
+  /// uid when the incoming text lacks one — and returns null when writing it
+  /// would change nothing (a no-op save).
+  Future<String?> _composedSaveText(String notePath, String text) async {
+    final before = await files.readBytesIfPresent(notePath);
+    if (before == null || !NoteFileStore.isValidUtf8(before)) return text;
+
+    final stripped = before.length >= 3 &&
+            before[0] == 0xEF &&
+            before[1] == 0xBB &&
+            before[2] == 0xBF
+        ? before.sublist(3)
+        : before;
+    final beforeText = utf8.decode(stripped);
+    if (beforeText == text) return null;
+    // ADR-2: identity lives in the file. A save whose text carries no
+    // front matter (or no uid key) must not destroy the note's existing
+    // uid — otherwise every such save mints a fresh identity and the
+    // sync engine sees a brand-new note.
+    final existingUid = FrontMatterPatcher.readString(beforeText, 'uid');
+    if (existingUid == null || existingUid.trim().isEmpty) return text;
+    if (FrontMatterPatcher.readString(text, 'uid') != null) return text;
+    final outText = FrontMatterPatcher.withUid(text, existingUid.trim());
+    return outText == beforeText ? null : outText;
   }
 
   /// Creates a new note and returns its `notes/`-prefixed path.

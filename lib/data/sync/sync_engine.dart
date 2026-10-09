@@ -523,8 +523,18 @@ class SyncEngine {
         // exists, so the wait scales with the body for free. Without it a
         // large attachment runs into the client's 30-second default and is
         // reported as a failed download on a perfectly good connection.
-        final remote2 =
-            await dav.get(path, expectedLength: remote?.contentLength);
+        List<int>? remote2;
+        try {
+          remote2 = await dav.get(path, expectedLength: remote?.contentLength);
+        } on DavException catch (e) {
+          await meta.notePreconditionFailed(
+            syncRootId: syncRootId,
+            path: path,
+            error: '下载中断：${e.reason}',
+            at: nowMs,
+          );
+          return _Outcome.retryNextRound;
+        }
         if (remote2 == null) return _Outcome.skipped;
         await files.writeAtomic(path, remote2);
         await meta.commitBase(
@@ -550,14 +560,47 @@ class SyncEngine {
         // is hashed on the way past, so it is read once and the checksum that
         // becomes the merge base is the checksum of what actually went over
         // the wire.
-        final upload = await _streamAttachment(path: path, condition: condition);
+        //
+        // The try is the other half of §5.5's "失败时记录 next_attempt_at，
+        // 重试为整文件重传". A transfer that dies mid-body — a dropped socket, a
+        // timeout, a captive portal — never produces a status code, so every
+        // refusal branch below is unreachable for it and it arrives as a
+        // thrown exception instead. Uncaught, one attachment killed the whole
+        // round: every other path in the vault went untouched, the failure was
+        // not recorded against the attachment, and the user's only evidence was
+        // a sync that reported "failed" without saying what. The local file is
+        // untouched either way, which is what makes a whole-file retry safe.
+        _StreamedPut upload;
+        try {
+          upload = await _streamAttachment(path: path, condition: condition);
+        } on DavException catch (e) {
+          await meta.notePreconditionFailed(
+            syncRootId: syncRootId,
+            path: path,
+            error: '传输中断：${e.reason}',
+            at: nowMs,
+          );
+          return _Outcome.retryNextRound;
+        }
 
         if (upload.put.statusCode == 409) {
           // A missing folder, not a stale base — the same thing a note PUT can
           // hit, and for the same reason: a vault that has never had a
           // subfolder on the server yet.
           await dav.ensureCollection(_parentOf(path));
-          final retry = await _streamAttachment(path: path, condition: condition);
+          _StreamedPut retry;
+          try {
+            retry =
+                await _streamAttachment(path: path, condition: condition);
+          } on DavException catch (e) {
+            await meta.notePreconditionFailed(
+              syncRootId: syncRootId,
+              path: path,
+              error: '传输中断：${e.reason}',
+              at: nowMs,
+            );
+            return _Outcome.retryNextRound;
+          }
           if (retry.put.statusCode == 409 || retry.put.statusCode == 412) {
             await meta.notePreconditionFailed(
               syncRootId: syncRootId,
