@@ -22,13 +22,8 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/MagicianEW/JotIt/releases)：
-
-| 平台 | 产物 |
-|---|---|
-| Windows | `jotit.exe`（debug 版，含运行时目录） |
-| Android | `app-debug.apk` / `app-release.apk`（未签名 release） |
-| macOS | 计划中（见下方路线） |
+项目处于早期阶段（v0.0.1），暂未提供预编译包，请[从源码构建](#从源码构建)。
+预编译包（Windows / Android）将随版本成熟后发布于 [Releases](https://github.com/MagicianEW/JotIt/releases)。
 
 ## 从源码构建
 
