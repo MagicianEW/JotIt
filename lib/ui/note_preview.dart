@@ -11,6 +11,7 @@ import '../core/vault_paths.dart';
 import '../domain/entities/markdown_parser.dart';
 import '../domain/entities/parsed_note.dart';
 import '../domain/vault/link_resolver.dart';
+import 'theme.dart';
 
 /// Schemes invented by the preview pipeline. Wiki syntax does not survive a
 /// CommonMark renderer, so `renderableBody` rewrites `[[target]]` /
@@ -172,6 +173,95 @@ class NotePreview extends ConsumerStatefulWidget {
   ConsumerState<NotePreview> createState() => _NotePreviewState();
 }
 
+/// Typography for the reading surface.
+///
+/// These are the four things the reference apps get right and the generated
+/// Material defaults get wrong: line height (1.75, not 1.4), heading weight
+/// instead of heading colour, block spacing that breathes, and one accent
+/// colour reserved for links. Nothing here is decorative — it is all about
+/// staying readable for a long sitting.
+MarkdownStyleSheet _previewStyleSheet(ThemeData theme) {
+  final c = theme.colorScheme;
+  final mono = JotItTokens.monoBase;
+  final bool dark = theme.brightness == Brightness.dark;
+
+  return MarkdownStyleSheet.fromTheme(theme).copyWith(
+    p: theme.textTheme.bodyLarge?.copyWith(height: 1.75, color: c.onSurface),
+    pPadding: EdgeInsets.zero,
+    blockSpacing: 12,
+    // Headings keep the body colour; size and weight do the work (Bear and
+    // Notion both refuse to tint headings, and they are right).
+    h1: TextStyle(
+        fontSize: 24, fontWeight: FontWeight.w700, height: 1.3, color: c.onSurface),
+    h1Padding: const EdgeInsets.only(top: 12, bottom: 4),
+    h2: TextStyle(
+        fontSize: 20, fontWeight: FontWeight.w600, height: 1.35, color: c.onSurface),
+    h2Padding: EdgeInsets.zero,
+    h3: TextStyle(
+        fontSize: 17, fontWeight: FontWeight.w600, height: 1.4, color: c.onSurface),
+    h3Padding: EdgeInsets.zero,
+    h4: TextStyle(
+        fontSize: 15, fontWeight: FontWeight.w600, height: 1.4,
+        color: c.onSurfaceVariant),
+    h4Padding: EdgeInsets.zero,
+    h5: TextStyle(
+        fontSize: 15, fontWeight: FontWeight.w600, height: 1.4,
+        color: c.onSurfaceVariant),
+    h5Padding: EdgeInsets.zero,
+    h6: TextStyle(
+        fontSize: 15, fontWeight: FontWeight.w600, height: 1.4,
+        color: c.onSurfaceVariant),
+    h6Padding: EdgeInsets.zero,
+    em: TextStyle(fontStyle: FontStyle.italic, color: c.onSurface),
+    strong: TextStyle(fontWeight: FontWeight.w600, color: c.onSurface),
+    del: TextStyle(
+        decoration: TextDecoration.lineThrough, color: c.onSurfaceVariant),
+    // The only coloured text in a note. No underline: the colour already says
+    // "this is a link", and a line under every reference is noise.
+    a: TextStyle(
+      color: c.primary,
+      decoration: TextDecoration.none,
+    ),
+    code: mono.copyWith(
+      backgroundColor: c.primaryContainer,
+      color: c.onPrimaryContainer,
+    ),
+    blockquote: theme.textTheme.bodyMedium?.copyWith(color: c.onSurfaceVariant),
+    blockquotePadding:
+        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    blockquoteDecoration: BoxDecoration(
+      color: c.surfaceContainerLow,
+      border: Border(left: BorderSide(color: c.primary, width: 3)),
+      borderRadius: const BorderRadius.horizontal(
+        right: Radius.circular(JotItTokens.rSm),
+      ),
+    ),
+    codeblockDecoration: BoxDecoration(
+      color: c.surfaceContainer,
+      borderRadius: BorderRadius.circular(JotItTokens.rSm),
+      border: Border.all(color: c.outlineVariant),
+    ),
+    codeblockPadding: const EdgeInsets.all(12),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: c.outlineVariant)),
+    ),
+    listBullet: TextStyle(color: c.onSurfaceVariant),
+    tableBorder: TableBorder.all(color: c.outlineVariant, width: 1),
+    tableHead: TextStyle(
+      fontWeight: FontWeight.w600,
+      fontSize: 13.5,
+      color: c.onSurface,
+    ),
+    tableBody: TextStyle(fontSize: 13.5, color: c.onSurface),
+    tableCellsPadding:
+        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    // A checked task box is a primary-coloured tick; unchecked boxes stay
+    // neutral so a long checklist does not turn the page green.
+    checkbox: TextStyle(color: dark ? c.primary : c.primary),
+  );
+}
+
+
 class _NotePreviewState extends ConsumerState<NotePreview> {
   LinkIndex? _index;
   String? _vaultRoot;
@@ -209,17 +299,7 @@ class _NotePreviewState extends ConsumerState<NotePreview> {
         softLineBreak: true,
         onTapLink: _onTapLink,
         imageBuilder: (uri, title, alt) => _buildImage(uri, title, alt, theme),
-        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-          blockquoteDecoration: BoxDecoration(
-            border: Border(
-              left: BorderSide(color: theme.colorScheme.outline, width: 3),
-            ),
-          ),
-          codeblockDecoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(6),
-          ),
-        ),
+        styleSheet: _previewStyleSheet(theme),
       ),
     );
   }
@@ -297,7 +377,10 @@ class _NotePreviewState extends ConsumerState<NotePreview> {
     // Real web images keep working; there is no reason to break standard
     // markdown while adding wiki embeds.
     if (uri.scheme == 'http' || uri.scheme == 'https') {
-      return Image.network(uri.toString(), errorBuilder: _imageError(alt));
+      return _framed(
+        Image.network(uri.toString(), errorBuilder: _imageError(alt)),
+        theme,
+      );
     }
 
     String target;
@@ -340,12 +423,31 @@ class _NotePreviewState extends ConsumerState<NotePreview> {
 
     final fsPath =
         p.join(vaultRoot, p.joinAll(norm.split('/')));
-    return Image.file(
-      File(fsPath),
-      fit: BoxFit.contain,
-      errorBuilder: _imageError(alt),
+    return _framed(
+      Image.file(
+        File(fsPath),
+        fit: BoxFit.contain,
+        errorBuilder: _imageError(alt),
+      ),
+      theme,
     );
   }
+
+  /// Pictures sit on the page like prints on a desk: rounded corner, one
+  /// hairline edge, no shadow.
+  Widget _framed(Widget image, ThemeData theme) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(JotItTokens.rSm),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+              borderRadius: BorderRadius.circular(JotItTokens.rSm),
+            ),
+            child: image,
+          ),
+        ),
+      );
 
   ImageErrorWidgetBuilder _imageError(String? alt) =>
       (BuildContext context, Object error, StackTrace? stackTrace) =>
@@ -353,8 +455,13 @@ class _NotePreviewState extends ConsumerState<NotePreview> {
 
   Widget _imagePlaceholder(String? alt, ThemeData theme) {
     final label = (alt == null || alt.isEmpty) ? '无法显示的图片' : alt;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(JotItTokens.rXs),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

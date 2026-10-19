@@ -6,6 +6,7 @@ import '../data/db/note_dao.dart';
 import '../data/search/note_search.dart';
 import 'editor_page.dart';
 import 'settings_page.dart';
+import 'theme.dart';
 
 /// The note list, with search and the sync-root status.
 class HomePage extends ConsumerStatefulWidget {
@@ -43,6 +44,14 @@ class _HomePageState extends ConsumerState<HomePage> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createNote,
+        // Tonal, not a solid block of accent: the "new note" button should be
+        // findable without being the loudest thing on a page of reading.
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+        elevation: 3,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(JotItTokens.rLg),
+        ),
         icon: const Icon(Icons.add),
         label: const Text('新建'),
       ),
@@ -52,7 +61,6 @@ class _HomePageState extends ConsumerState<HomePage> {
             controller: _searchController,
             onChanged: (v) => ref.read(searchQueryProvider.notifier).set(v),
           ),
-          const Divider(height: 1),
           Expanded(
             child: query.trim().isEmpty
                 ? const _NoteList()
@@ -130,27 +138,79 @@ class _NewNoteDialogState extends State<_NewNoteDialog> {
       );
 }
 
-class _SearchBar extends StatelessWidget {
+class _SearchBar extends StatefulWidget {
   const _SearchBar({required this.controller, required this.onChanged});
 
   final TextEditingController controller;
   final ValueChanged<String> onChanged;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-        child: TextField(
-          controller: controller,
-          onChanged: onChanged,
-          decoration: InputDecoration(
-            hintText: '搜索…',
-            prefixIcon: const Icon(Icons.search),
-            border:
-                OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            isDense: true,
+  State<_SearchBar> createState() => _SearchBarState();
+}
+
+class _SearchBarState extends State<_SearchBar> {
+  @override
+  void initState() {
+    super.initState();
+    // Rebuild for the clear button: its presence tracks whether there is text,
+    // and a TextField gives no notification to the widget that owns it.
+    widget.controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onTextChanged);
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          JotItTokens.s4, JotItTokens.s3, JotItTokens.s4, JotItTokens.s2),
+      child: TextField(
+        controller: widget.controller,
+        onChanged: widget.onChanged,
+        textAlignVertical: TextAlignVertical.center,
+        decoration: InputDecoration(
+          hintText: '搜索…',
+          prefixIcon: const Icon(Icons.search, size: 20),
+          suffixIcon: widget.controller.text.isEmpty
+              ? null
+              : IconButton(
+                  tooltip: '清除',
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () {
+                    widget.controller.clear();
+                    widget.onChanged('');
+                  },
+                ),
+          // A full-radius pill reads as "search", which is the one place in
+          // this app where a rounded shape carries meaning.
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(999),
+            borderSide: BorderSide.none,
           ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(999),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(999),
+            borderSide: BorderSide(color: theme.colorScheme.primary, width: 1.5),
+          ),
+          isDense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         ),
-      );
+      ),
+    );
+  }
 }
 
 class _NoteList extends ConsumerWidget {
@@ -164,9 +224,11 @@ class _NoteList extends ConsumerWidget {
       error: (e, _) => _ErrorBox(message: '$e'),
       data: (state) {
         if (state.notes.isEmpty) return const _EmptyVault();
-        return ListView.separated(
+        return ListView.builder(
+          // Room at the bottom so the extended FAB never covers the last
+          // note's row.
+          padding: const EdgeInsets.only(top: 4, bottom: 96),
           itemCount: state.notes.length,
-          separatorBuilder: (_, _) => const Divider(height: 1),
           itemBuilder: (context, i) =>
               _NoteTile(note: state.notes[i], showPath: false),
         );
@@ -190,17 +252,18 @@ class _SearchResults extends ConsumerWidget {
         if (hits.isEmpty) {
           return Center(
             child: Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(JotItTokens.s5),
               child: Text(
                 '没有匹配「$query」的内容',
+                textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             ),
           );
         }
-        return ListView.separated(
+        return ListView.builder(
+          padding: const EdgeInsets.only(top: 4, bottom: 96),
           itemCount: hits.length,
-          separatorBuilder: (_, _) => const Divider(height: 1),
           itemBuilder: (context, i) => _SearchTile(hit: hits[i]),
         );
       },
@@ -215,19 +278,10 @@ class _SearchTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    return ListTile(
-      title: Text(
-        hit.title.isEmpty ? hit.path : hit.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        hit.snippet.isEmpty ? hit.path : hit.snippet,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall,
-      ),
+    return _ShelfCard(
+      icon: Icons.description_outlined,
+      title: hit.title.isEmpty ? hit.path : hit.title,
+      subtitle: hit.snippet.isEmpty ? hit.path : hit.snippet,
       onTap: () {
         ref.read(openNoteProvider.notifier).open(hit.path);
         Navigator.of(context).push(
@@ -238,24 +292,141 @@ class _SearchTile extends ConsumerWidget {
   }
 }
 
+/// One row on the shelf.
+///
+/// A card, not a table row: the icon disc gives every note the same visual
+/// anchor, and 8 px of paper between cards is what makes the list read as
+/// separate things rather than as one long ledger. The icon is deliberately
+/// `description_outlined` and not `article_outlined` — the latter means the
+/// rich-text view in the editor's own menu.
+class _ShelfCard extends StatelessWidget {
+  const _ShelfCard({
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final c = theme.colorScheme;
+    final radius = BorderRadius.circular(JotItTokens.rMd);
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+          horizontal: JotItTokens.s4, vertical: 4),
+      child: Material(
+        color: c.surfaceContainerLow,
+        borderRadius: radius,
+        child: InkWell(
+          borderRadius: radius,
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: JotItTokens.s3, vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(color: c.outlineVariant),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: c.primaryContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, size: 20, color: c.onPrimaryContainer),
+                ),
+                const SizedBox(width: JotItTokens.s3),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      if (subtitle != null && subtitle!.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _NoteTile extends ConsumerWidget {
   const _NoteTile({required this.note, required this.showPath});
 
   final NoteRecord note;
   final bool showPath;
 
+  /// The first line of the body that carries meaning: markers stripped, code
+  /// fences and rules skipped. Purely a display transform — the index row is
+  /// not touched, and a note whose body is empty simply has no second line.
+  String _excerpt(String body) {
+    for (final raw in body.split('\n')) {
+      final line = raw.trim();
+      if (line.isEmpty) continue;
+      if (line.startsWith('```') || line.startsWith('---')) continue;
+      final cleaned = line
+          .replaceFirst(RegExp(r'^#{1,6}\s+'), '')
+          .replaceFirst(RegExp(r'^([-*+]|\d+\.)\s+'), '');
+      if (cleaned.isEmpty) continue;
+      return cleaned.length > 60 ? '${cleaned.substring(0, 60)}…' : cleaned;
+    }
+    return '';
+  }
+
+  /// "今天 09:12" is more use on a shelf than a full timestamp, and "3 天前"
+  /// is more use than a date nobody converts in their head.
+  String _relativeTime(int epochMs) {
+    if (epochMs <= 0) return '';
+    final at = DateTime.fromMillisecondsSinceEpoch(epochMs);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final thatDay = DateTime(at.year, at.month, at.day);
+    final days = today.difference(thatDay).inDays;
+    String two(int v) => v.toString().padLeft(2, '0');
+    if (days <= 0) return '今天 ${two(at.hour)}:${two(at.minute)}';
+    if (days == 1) return '昨天';
+    if (days < 7) return '$days 天前';
+    return '${two(at.month)}-${two(at.day)}';
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
     final title = note.title.trim().isEmpty ? note.path : note.title;
-    return ListTile(
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: showPath
-          ? Text(note.path,
-              style: theme.textTheme.bodySmall,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis)
-          : null,
+    final subtitle = showPath
+        ? note.path
+        : <String>[_excerpt(note.body), _relativeTime(note.updatedAt)]
+            .where((s) => s.isNotEmpty)
+            .join(' · ');
+    return _ShelfCard(
+      icon: Icons.description_outlined,
+      title: title,
+      subtitle: subtitle,
       onTap: () {
         ref.read(openNoteProvider.notifier).open(note.path);
         Navigator.of(context).push(
@@ -270,23 +441,36 @@ class _EmptyVault extends StatelessWidget {
   const _EmptyVault();
 
   @override
-  Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.inbox_outlined,
-                  size: 48, color: Theme.of(context).disabledColor),
-              const SizedBox(height: 12),
-              const Text('库里还没有笔记'),
-              SizedBox(height: 4),
-              Text('点右下角新建一篇',
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(JotItTokens.s6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.secondaryContainer,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.inbox_outlined,
+                size: 36,
+                color: theme.colorScheme.onSecondaryContainer,
+              ),
+            ),
+            const SizedBox(height: JotItTokens.s4),
+            Text('库里还没有笔记', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text('点右下角新建一篇', style: theme.textTheme.bodySmall),
+          ],
         ),
-      );
+      ),
+    );
+  }
 }
 
 class _ErrorBox extends StatelessWidget {
@@ -295,14 +479,35 @@ class _ErrorBox extends StatelessWidget {
   final String message;
 
   @override
-  Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            '出错了：$message',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(JotItTokens.s5),
+        child: Container(
+          padding: const EdgeInsets.all(JotItTokens.s4),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.errorContainer,
+            borderRadius: BorderRadius.circular(JotItTokens.rMd),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.error_outline,
+                  size: 18, color: theme.colorScheme.onErrorContainer),
+              const SizedBox(width: JotItTokens.s2),
+              Flexible(
+                child: Text(
+                  '出错了：$message',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                ),
+              ),
+            ],
           ),
         ),
-      );
+      ),
+    );
+  }
 }

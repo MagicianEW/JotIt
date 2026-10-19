@@ -10,6 +10,7 @@ import '../domain/entities/rich_note_codec.dart';
 import '../domain/vault/attachment_writer.dart';
 import 'note_preview.dart';
 import 'rich_editor.dart';
+import 'theme.dart';
 
 /// The three ways a note can be shown. [EditorView.rich] is the WYSIWYG pane
 /// (super_editor) — entered only when the note carries no syntax the rich
@@ -123,10 +124,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
             // title tracks what is actually on screen — including a jump's
             // brief reload window, where it keeps showing the old note rather
             // than mixing the new path with the old text.
-            title: Text(
-              _titleOf(_loadedPath ?? path, _controller.text),
-              overflow: TextOverflow.ellipsis,
-            ),
+            title: _appBarTitle(_loadedPath ?? path),
             actions: [
               PopupMenuButton<EditorView>(
                 key: const ValueKey('editor-view-menu'),
@@ -232,43 +230,77 @@ class EditorPageState extends ConsumerState<EditorPage> {
 
     // Keyed by path so a jumped-to note rebuilds the preview from scratch —
     // including its link index, which belongs to the note being shown.
+    final theme = Theme.of(context);
     return Column(
       children: [
         Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: switch (_view) {
-              EditorView.preview => NotePreview(
-                  key: ValueKey('preview-${note.notePath}'),
-                  text: _controller.text,
-                  onOpenNote: _openLinkedNote,
-                  onTapBlock: _locateAndEdit,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Phones get 16 px of margin, desktop windows 24: the same
+              // content needs more breathing room when it has more room.
+              final gutter = JotItTokens.gutter(constraints.maxWidth);
+              return Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: gutter,
+                  vertical: JotItTokens.s3,
                 ),
-              EditorView.rich => RichEditorPane(
-                  key: _richPaneKey,
-                  body:
-                      const MarkdownParser().splitFrontMatter(_controller.text).body,
-                  onChanged: _onRichChanged,
-                  // The debounce delays the *serialisation*; the dirty flag
-                  // must not wait for it (P1-10).
-                  onEditStarted: _markEdited,
-                ),
-              EditorView.source => TextField(
-                  key: const ValueKey('editor-body'),
-                  controller: _controller,
-                  focusNode: _focus,
-                  maxLines: null,
-                  expands: true,
-                  textAlignVertical: TextAlignVertical.top,
-                  style: const TextStyle(fontFamily: 'Consolas', height: 1.5),
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    hintText: '正文',
-                  ),
-                  onChanged: (_) {
-                    if (!_dirty) setState(() => _dirty = true);
-                  },
-                ),
+                child: switch (_view) {
+                  // Reading column: on a wide window a full-width paragraph
+                  // is unreadable — the eye loses the line. 680 px is where
+                  // 16 px text lands in the 45–75 characters-per-line band.
+                  EditorView.preview => Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                            maxWidth: JotItTokens.readingWidth),
+                        child: NotePreview(
+                          key: ValueKey('preview-${note.notePath}'),
+                          text: _controller.text,
+                          onOpenNote: _openLinkedNote,
+                          onTapBlock: _locateAndEdit,
+                        ),
+                      ),
+                    ),
+                  EditorView.rich => RichEditorPane(
+                      key: _richPaneKey,
+                      body: const MarkdownParser()
+                          .splitFrontMatter(_controller.text)
+                          .body,
+                      onChanged: _onRichChanged,
+                      // The debounce delays the *serialisation*; the dirty flag
+                      // must not wait for it (P1-10).
+                      onEditStarted: _markEdited,
+                    ),
+                  EditorView.source => TextField(
+                      key: const ValueKey('editor-body'),
+                      controller: _controller,
+                      focusNode: _focus,
+                      maxLines: null,
+                      expands: true,
+                      textAlignVertical: TextAlignVertical.top,
+                      // Monospace with a real fallback chain: Consolas alone
+                      // exists only on Windows, and CJK text needs the Noto
+                      // face at the end of the stack to keep its columns.
+                      style: TextStyle(
+                        fontFamily: 'Consolas',
+                        fontFamilyFallback: JotItTokens.monoFallback,
+                        fontSize: 14,
+                        height: 1.6,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                      cursorColor: theme.colorScheme.primary,
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        // The theme fills inputs to read as "paper"; a full-
+                        // screen editing surface must not be a grey slab.
+                        filled: false,
+                        hintText: '正文',
+                      ),
+                      onChanged: (_) {
+                        if (!_dirty) setState(() => _dirty = true);
+                      },
+                    ),
+                },
+              );
             },
           ),
         ),
@@ -326,6 +358,33 @@ class EditorPageState extends ConsumerState<EditorPage> {
     // Same three-step resolution as the shelf list (§4.4): a file name parked
     // in the app bar reads as "this is my title" when it is only storage.
     return MarkdownParser.resolveTitle(text ?? '', fallback: stem);
+  }
+
+  /// Two lines: the note's title, and where the file actually lives.
+  ///
+  /// The path line is the app's promise made visible — notes are files in a
+  /// folder — and at 11 px it answers "where is this?" without competing with
+  /// the title. The `notes/` prefix every vault path carries is noise up here,
+  /// so it is stripped for display only; nothing is rewritten on disk.
+  Widget _appBarTitle(String? path) {
+    final theme = Theme.of(context);
+    final title = _titleOf(path, _controller.text);
+    final where = path?.replaceFirst(RegExp(r'^notes/'), '');
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        if (where != null && where.isNotEmpty)
+          Text(
+            where,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+      ],
+    );
   }
 
   // ------------------------------------------------------------- formatting
@@ -387,55 +446,46 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// The format toolbar shown under the text field in edit mode.
   Widget _formatBar() {
     final theme = Theme.of(context);
+    final c = theme.colorScheme;
+    Widget button(IconData icon, String tooltip, VoidCallback onPressed) =>
+        IconButton(
+          tooltip: tooltip,
+          iconSize: 20,
+          color: c.onSurfaceVariant,
+          icon: Icon(icon),
+          onPressed: onPressed,
+        );
+    // One hairline between inline formatting and block formatting: the two
+    // groups answer different questions — "how does this text look" versus
+    // "what kind of block is this" — and a bare row of eight icons blurs them.
+    Widget separator() => Container(
+          width: 1,
+          height: 18,
+          margin: const EdgeInsets.symmetric(horizontal: JotItTokens.s1),
+          color: c.outlineVariant,
+        );
+
     return Container(
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(top: BorderSide(color: theme.dividerColor)),
+        color: c.surfaceContainerLow,
+        border: Border(top: BorderSide(color: c.outlineVariant)),
       ),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            IconButton(
-              tooltip: '加粗',
-              icon: const Icon(Icons.format_bold),
-              onPressed: () => _wrapSelection('**', '**'),
-            ),
-            IconButton(
-              tooltip: '斜体',
-              icon: const Icon(Icons.format_italic),
-              onPressed: () => _wrapSelection('*', '*'),
-            ),
-            IconButton(
-              tooltip: '删除线',
-              icon: const Icon(Icons.strikethrough_s),
-              onPressed: () => _wrapSelection('~~', '~~'),
-            ),
-            IconButton(
-              tooltip: '行内代码',
-              icon: const Icon(Icons.code),
-              onPressed: () => _wrapSelection('`', '`'),
-            ),
-            IconButton(
-              tooltip: '链接',
-              icon: const Icon(Icons.link),
-              onPressed: _insertLink,
-            ),
-            IconButton(
-              tooltip: '列表',
-              icon: const Icon(Icons.format_list_bulleted),
-              onPressed: () => _toggleLinePrefix('- '),
-            ),
-            IconButton(
-              tooltip: '引用',
-              icon: const Icon(Icons.format_quote),
-              onPressed: () => _toggleLinePrefix('> '),
-            ),
-            IconButton(
-              tooltip: '标题',
-              icon: const Icon(Icons.title),
-              onPressed: _cycleHeading,
-            ),
+            button(Icons.format_bold, '加粗', () => _wrapSelection('**', '**')),
+            button(Icons.format_italic, '斜体', () => _wrapSelection('*', '*')),
+            button(Icons.strikethrough_s, '删除线',
+                () => _wrapSelection('~~', '~~')),
+            button(Icons.code, '行内代码', () => _wrapSelection('`', '`')),
+            button(Icons.link, '链接', _insertLink),
+            separator(),
+            button(Icons.format_list_bulleted, '列表',
+                () => _toggleLinePrefix('- ')),
+            button(Icons.format_quote, '引用', () => _toggleLinePrefix('> ')),
+            button(Icons.title, '标题', _cycleHeading),
+            const SizedBox(width: JotItTokens.s2),
           ],
         ),
       ),
@@ -928,10 +978,10 @@ class _StatusBar extends StatelessWidget {
     ];
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        border: Border(top: BorderSide(color: theme.dividerColor)),
+        color: theme.colorScheme.surfaceContainerLow,
+        border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -944,13 +994,26 @@ class _StatusBar extends StatelessWidget {
                   // With no note there are no facts to fall back to, and the
                   // body above already says why nothing is loaded.
                   status ?? (note == null ? '' : facts.join(' · ')),
-                  style: theme.textTheme.bodySmall,
+                  // Facts are machine detail (uid, BOM, CRLF), so they get the
+                  // monospace face and the smallest label size — present,
+                  // readable, never in the way.
+                  style: JotItTokens.monoBase.copyWith(
+                    fontSize: 11,
+                    height: 1.4,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
               if (note != null && !note!.hasUid)
                 TextButton(
                   onPressed: onSave,
+                  style: TextButton.styleFrom(
+                    textStyle: theme.textTheme.labelSmall,
+                    visualDensity: VisualDensity.compact,
+                    minimumSize: const Size(0, 28),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
                   child: const Text('补写 uid'),
                 ),
             ],

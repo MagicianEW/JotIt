@@ -1,5 +1,8 @@
 // Capability probe: verifies ADR-4 (SQLite >= 3.34 + FTS5 + trigram) actually
 // holds on this machine with the bundled SQLite. Run: dart run tool/probe_sqlite.dart
+//
+// 这是一个命令行探针脚本，输出就是它唯一的产品，故豁免 avoid_print。
+// ignore_for_file: avoid_print
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 Future<void> main() async {

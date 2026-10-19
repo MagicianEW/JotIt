@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/app_lock.dart';
 import '../app/providers.dart';
+import 'theme.dart';
 
 /// The PIN gate (§8.3).
 ///
@@ -132,6 +133,7 @@ class _LockGateState extends ConsumerState<LockGate> {
     }
     if (!_locked) return widget.child;
 
+    final theme = Theme.of(context);
     final cooling = _remaining > Duration.zero;
     return Scaffold(
       body: SafeArea(
@@ -139,46 +141,80 @@ class _LockGateState extends ConsumerState<LockGate> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 360),
             child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Icon(Icons.lock_outline, size: 40),
-                  const SizedBox(height: 12),
-                  Text(
-                    'JotIt 已锁定',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _pin,
-                    obscureText: true,
-                    autofocus: true,
-                    keyboardType: TextInputType.number,
-                    maxLength: 32,
-                    enabled: !cooling,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: 'PIN',
-                      counterText: '',
+              padding: const EdgeInsets.all(JotItTokens.s5),
+              // One sheet of paper lying on the desk: a quiet card, a hairline
+              // edge, no shadow. The lock screen is the first thing a user
+              // sees, and it should look like the app, not like a dialog.
+              child: Container(
+                padding: const EdgeInsets.all(JotItTokens.s5),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerLowest,
+                  borderRadius: BorderRadius.circular(JotItTokens.rLg),
+                  border:
+                      Border.all(color: theme.colorScheme.outlineVariant),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primaryContainer,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.lock_outline,
+                          size: 40,
+                          color: theme.colorScheme.onPrimaryContainer,
+                        ),
+                      ),
                     ),
-                    onSubmitted: (_) => _submit(),
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    Text(_error!,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            color: Theme.of(context).colorScheme.error)),
+                    const SizedBox(height: JotItTokens.s3),
+                    Text(
+                      'JotIt 已锁定',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: JotItTokens.s4),
+                    TextField(
+                      controller: _pin,
+                      obscureText: true,
+                      autofocus: true,
+                      keyboardType: TextInputType.number,
+                      maxLength: 32,
+                      enabled: !cooling,
+                      textAlign: TextAlign.center,
+                      // Wide tracking turns a row of dots into something the
+                      // eye can count — the same trick a laundry ticket uses.
+                      style: const TextStyle(
+                        fontSize: 20,
+                        letterSpacing: 6,
+                        fontFamily: 'Consolas',
+                        fontFamilyFallback: JotItTokens.monoFallback,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'PIN',
+                        counterText: '',
+                      ),
+                      onSubmitted: (_) => _submit(),
+                    ),
+                    if (_error != null) ...[
+                      const SizedBox(height: JotItTokens.s3),
+                      Text(_error!,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: theme.colorScheme.error)),
+                    ],
+                    const SizedBox(height: JotItTokens.s5),
+                    FilledButton(
+                      onPressed: cooling ? null : _submit,
+                      child: Text(cooling ? '请稍候 ${_remaining.inSeconds}s' : '解锁'),
+                    ),
                   ],
-                  const SizedBox(height: 20),
-                  FilledButton(
-                    onPressed: cooling ? null : _submit,
-                    child: Text(cooling ? '请稍候 ${_remaining.inSeconds}s' : '解锁'),
-                  ),
-                ],
+                ),
               ),
             ),
           ),

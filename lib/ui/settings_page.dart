@@ -11,6 +11,7 @@ import '../app/vault_session.dart';
 import '../data/db/sync_root_store.dart';
 import '../domain/sync/conflict_writer.dart';
 import 'remote_form.dart';
+import 'theme.dart';
 
 /// Settings: where the vault is, which remotes exist, and what is waiting.
 ///
@@ -31,30 +32,33 @@ class SettingsPage extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('打不开库：$e')),
         data: (vault) => ListView(
+          // Each section is a sheet of paper with a hairline edge: grouping by
+          // cards instead of bare dividers is what makes a long settings page
+          // scannable, and it matches the shelf on the first screen.
+          padding: const EdgeInsets.only(bottom: JotItTokens.s5),
           children: [
             _SectionHeader('本机'),
-            _InfoRow('库位置', vault.vaultRoot),
-            _InfoRow('笔记目录', vault.notesPath),
-            _InfoRow('索引数据库', vault.databasePath),
-            _InfoRow('冲突副本', vault.conflictsPath),
-            const Divider(),
+            _GroupCard(children: [
+              _InfoRow('库位置', vault.vaultRoot),
+              _InfoRow('笔记目录', vault.notesPath),
+              _InfoRow('索引数据库', vault.databasePath),
+              _InfoRow('冲突副本', vault.conflictsPath),
+            ]),
 
             _SectionHeader('同步'),
-            const _SyncRootsSection(),
-            const Divider(),
+            const _GroupCard(children: [_SyncRootsSection()]),
 
             _SectionHeader('待处理'),
-            _ConflictsSection(vaultRoot: vault.vaultRoot),
-            _DeadLettersSection(),
-            const Divider(),
+            _GroupCard(children: [
+              _ConflictsSection(vaultRoot: vault.vaultRoot),
+              const _DeadLettersSection(),
+            ]),
 
             _SectionHeader('安全'),
-            const _LockSection(),
-            const Divider(),
+            const _GroupCard(children: [_LockSection()]),
 
             _SectionHeader('维护'),
-            _RebuildIndexTile(),
-            const SizedBox(height: 24),
+            const _GroupCard(children: [_RebuildIndexTile()]),
           ],
         ),
       ),
@@ -69,15 +73,46 @@ class _SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+        // Left edge aligns with the text inside the group cards below, not
+        // with the cards themselves.
+        padding: const EdgeInsets.fromLTRB(
+            JotItTokens.s5, JotItTokens.s5, JotItTokens.s5, JotItTokens.s1),
         child: Text(
           text,
-          style: Theme.of(context)
-              .textTheme
-              .labelLarge
-              ?.copyWith(color: Theme.of(context).colorScheme.primary),
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1,
+              ),
         ),
       );
+}
+
+/// A rounded sheet of paper holding one section's rows.
+class _GroupCard extends StatelessWidget {
+  const _GroupCard({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = Theme.of(context).colorScheme;
+    // 用 Material 而不是带底色的 DecoratedBox：ListTile 的水波纹只能画在最近的
+    // Material 祖先上，中间夹一层有底色的盒子会把水波纹盖住并触发断言。
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+          horizontal: JotItTokens.s4, vertical: JotItTokens.s1),
+      child: Material(
+        color: c.surfaceContainerLow,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(JotItTokens.rMd),
+          side: BorderSide(color: c.outlineVariant),
+        ),
+        child: Column(children: children),
+      ),
+    );
+  }
 }
 
 class _InfoRow extends StatelessWidget {
@@ -87,11 +122,23 @@ class _InfoRow extends StatelessWidget {
   final String value;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-        dense: true,
-        title: Text(label),
-        subtitle: SelectableText(value),
-      );
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListTile(
+      dense: true,
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: JotItTokens.s4, vertical: 0),
+      title: Text(
+        label,
+        style: theme.textTheme.bodyMedium
+            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+      ),
+      // Selectable on purpose: a vault path is something people copy into a
+      // terminal, and a label that looks like text but cannot be selected is
+      // worse than a plain one.
+      subtitle: SelectableText(value, style: theme.textTheme.bodySmall),
+    );
+  }
 }
 
 /// Lists configured remotes and their backoff state, and is the only place a
@@ -142,20 +189,51 @@ class _SyncRootsSection extends ConsumerWidget {
     SyncRootRecord root,
     SyncController controller,
   ) {
+    final theme = Theme.of(context);
+    final c = theme.colorScheme;
     final running = controller.isRunning(root.id);
     final blocked = root.nextAttemptAt >
         DateTime.now().millisecondsSinceEpoch;
+    final ready = root.isReadyAt(DateTime.now().millisecondsSinceEpoch);
     return ListTile(
-      dense: true,
-      leading: Icon(
-        root.isReadyAt(DateTime.now().millisecondsSinceEpoch)
-            ? Icons.cloud_done_outlined
-            : Icons.cloud_queue_outlined,
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: JotItTokens.s3, vertical: 4),
+      // The same tone-on-tone disc as the shelf: a remote is a thing in this
+      // library, not a form row.
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: c.secondaryContainer,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          ready ? Icons.cloud_done_outlined : Icons.cloud_queue_outlined,
+          size: 20,
+          color: c.onSecondaryContainer,
+        ),
       ),
-      title: Text(root.name),
-      subtitle: Text(
-        '${root.baseUrl}\n'
-        '${root.lastError == null ? '正常' : '上次错误：${root.lastError}'}',
+      title: Text(root.name, style: theme.textTheme.titleMedium),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            root.baseUrl,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall,
+          ),
+          Text(
+            // Green for "fine", error red for "not fine": the two states a
+            // person actually scans this page for.
+            root.lastError == null ? '正常' : '上次错误：${root.lastError}',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: root.lastError == null ? c.primary : c.error,
+            ),
+          ),
+        ],
       ),
       isThreeLine: root.lastError != null,
       trailing: running
@@ -167,6 +245,10 @@ class _SyncRootsSection extends ConsumerWidget {
           : IconButton(
               tooltip: blocked ? '退避等待中' : '立即同步',
               icon: Icon(blocked ? Icons.timer_outlined : Icons.sync),
+              style: IconButton.styleFrom(
+                backgroundColor: c.primaryContainer,
+                foregroundColor: c.onPrimaryContainer,
+              ),
               onPressed: blocked
                   ? null
                   : () async {
@@ -635,17 +717,24 @@ class _PinDialogState extends State<_PinDialog> {
               obscureText: true,
               keyboardType: TextInputType.number,
               maxLength: 32,
+              textAlign: TextAlign.center,
+              // Wide tracking makes a short numeric secret easy to count
+              // instead of easy to mistype twice.
+              style: const TextStyle(letterSpacing: 6, fontSize: 20),
               decoration: const InputDecoration(
                 labelText: '新 PIN',
                 counterText: '',
               ),
             ),
+            const SizedBox(height: JotItTokens.s2),
             TextField(
               key: const ValueKey('new-pin-confirm'),
               controller: _confirm,
               obscureText: true,
               keyboardType: TextInputType.number,
               maxLength: 32,
+              textAlign: TextAlign.center,
+              style: const TextStyle(letterSpacing: 6, fontSize: 20),
               decoration: const InputDecoration(
                 labelText: '再输一次',
                 counterText: '',
