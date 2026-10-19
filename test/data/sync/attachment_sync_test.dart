@@ -225,6 +225,29 @@ void main() {
             'the server treat it as a text file');
   });
 
+  test('an attachment whose note no longer references it still deletes '
+      'remotely', () async {
+    // P1-3: "a note references this path" and "this vault has synced this
+    // path" are different facts. Deriving the second from the first meant a
+    // deleted attachment was re-downloaded from the server on every round,
+    // forever, with no way for the user to finish removing an image.
+    await writeNote('notes/a.md', embeddedNote, uid: 'u-a');
+    await writeAttachment(attachmentPath, png);
+    await run();
+    expect(await dav.remoteExists(attachmentPath), isTrue);
+
+    // The link is removed and the file is deleted. Nothing references it
+    // any more; the base row is the only thing that says this vault ever
+    // had it.
+    await writeNote('notes/a.md', 'no image any more', uid: 'u-a');
+    await files.fileFor(attachmentPath)?.delete();
+
+    final result = await run();
+
+    expect(result.deleted, contains(attachmentPath));
+    expect(await dav.remoteExists(attachmentPath), isFalse);
+  });
+
   test('a file no note references is left where it is', () async {
     // Someone copied a screenshot into `attachments/` and has not embedded it
     // yet. Pushing it would put a file on every other device that nothing on
@@ -325,6 +348,50 @@ void main() {
           reason: 'and the new one has to be there, or the note on the other '
               'device shows a broken image');
       expect(await dav.readRemote('notes/attachments/6f1a.png'), png);
+    });
+
+    test('a relocation refused with 412 is recorded, not fallen through',
+        () async {
+      // P1-2: something already owns the attachment's new path on the
+      // server, so the create is refused. The old branch recorded nothing
+      // and fell through to an unconditional delete of the old path — the
+      // only remote copy of the attachment.
+      //
+      // The note moves to a path that sorts *before* `attachments/` so the
+      // relocation runs before the new attachment path is classified: that
+      // is the only ordering in which the create can be refused at all
+      // (the mover itself leaves a local collision alone).
+      const notePath = 'notes/deep/nested/design.md';
+      const attachmentAtOld =
+          'notes/deep/nested/attachments/6f1a.png';
+      const attachmentAtNew = 'notes/attachments/6f1a.png';
+
+      await writeNote(notePath, '---\nuid: u-move\n---\n\n$nestedLink\n',
+          uid: 'u-move');
+      await writeAttachment(attachmentAtOld, png);
+      await run();
+      expect(await dav.remoteExists(attachmentAtOld), isTrue);
+
+      await dav.moveRemote(notePath, 'notes/aaa.md');
+      final foreign = Uint8List.fromList(png);
+      foreign[foreign.length - 3] = foreign[foreign.length - 3] ^ 0xFF;
+      await dav.seedRemote(attachmentAtNew, foreign);
+
+      final result = await run();
+
+      // The refusal is recorded against the new path, where the Settings
+      // page can show it — a 412 nobody records is a 412 nobody sees.
+      final refused = await meta.byPath(rootId, attachmentAtNew);
+      expect(refused, isNotNull);
+      expect(refused!.retryCount, greaterThan(0));
+      expect(refused.lastError, contains('412'));
+      expect(refused.lastError, contains('moving'));
+
+      // And the foreign file squatting at the new path is reported, never
+      // overwritten.
+      expect(result.attachmentViolations, contains(attachmentAtNew));
+      expect(await dav.readRemote(attachmentAtNew), foreign,
+          reason: 'the refused create must not have landed');
     });
   });
 }

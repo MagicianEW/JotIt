@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../../core/vault_paths.dart';
 import '../../domain/entities/front_matter_patcher.dart';
+import 'path_lock.dart';
 
 /// Reads and writes note files under a vault.
 ///
@@ -19,6 +20,10 @@ class NoteFileStore {
 
   final String vaultRoot;
   final Random _random;
+
+  /// Serialises read-modify-write sequences per path. See [exclusive] for why
+  /// a save and the scanner's uid backfill must not interleave.
+  final PathLock _pathLock = PathLock();
 
   static const String _tmpSuffix = '.jotit-tmp';
   static const String _bakSuffix = '.jotit-bak';
@@ -69,6 +74,36 @@ class NoteFileStore {
     }
     await target.parent.create(recursive: true);
     await _writeAtomicTo(target, bytes);
+  }
+
+  /// Writes [bytes] to an arbitrary [target] with the same tmp + rename
+  /// atomicity as [writeAtomic].
+  ///
+  /// Exists for files that are not notes: the rolling backup lives in
+  /// `.jotit/backups/`, outside the synced subtree [writeAtomic] is confined
+  /// to. It is the same crash-safety dance for the same reason — a half-written
+  /// backup is worse than no backup, because it looks like a recovery point.
+  Future<void> writeFileAtomic(File target, List<int> bytes) async {
+    await target.parent.create(recursive: true);
+    await _writeAtomicTo(target, bytes);
+  }
+
+  /// Runs [body] while holding this path's write lock.
+  ///
+  /// The lock exists for the one race ADR-2 cannot survive: a save and the
+  /// scanner's uid backfill are both read-modify-write sequences over the same
+  /// file. Without mutual exclusion the backfill stamps uid A, the save's
+  /// earlier read — which saw no uid — clobbers the file and mints uid B, and
+  /// the note's identity drifts with nothing on screen to show it. Callers
+  /// take the lock around the *whole* sequence (read, write, ensureUid); the
+  /// primitives below stay lock-free, and the lock is not reentrant.
+  ///
+  /// A path outside `notes/` has no lock — there is nothing valid to write
+  /// there, and the body refuses it loudly.
+  Future<T> exclusive<T>(String notePath, Future<T> Function() body) async {
+    final abs = absolutePathFor(notePath);
+    if (abs == null) return body();
+    return _pathLock.synchronized(abs, body);
   }
 
   Future<void> _writeAtomicTo(File target, List<int> bytes) async {
@@ -146,6 +181,12 @@ class NoteFileStore {
   ///
   /// Returns the new bytes, or null when nothing had to change or when the
   /// file cannot be safely rewritten.
+  ///
+  /// Lock-free by design: callers performing a read-modify-write sequence
+  /// (a save, the scanner's backfill) must hold the path's lock via
+  /// [exclusive] around the whole sequence — this method re-reads the file,
+  /// so calling it *inside* such a sequence is the point, and nesting it
+  /// under a second lock acquisition would deadlock.
   Future<List<int>?> ensureUid(String notePath, String uid) async {
     final f = fileFor(notePath);
     if (f == null) return null;
@@ -173,5 +214,69 @@ class NoteFileStore {
     await Directory(VaultPaths.notesRoot(vaultRoot)).create(recursive: true);
     await Directory(VaultPaths.conflictsRoot(vaultRoot)).create(recursive: true);
     await Directory(VaultPaths.appRoot(vaultRoot)).create(recursive: true);
+  }
+
+  /// Startup recovery for a write that was interrupted by a crash.
+  ///
+  /// [_writeAtomicTo] renames the original aside (`.jotit-bak.<token>`) and
+  /// then renames the temp into place. A process killed between those two
+  /// renames leaves the backup as the *only* copy of the previous content,
+  /// and nothing in the app ever looked at it — the scanner deliberately
+  /// ignores these names, so a note whose only copy is a `.jotit-bak` was
+  /// gone until the user found it by hand. A leftover `.jotit-tmp` is bytes
+  /// that were never committed.
+  ///
+  /// Run once at vault open, before the first reindex: the index must be
+  /// built from the files as they are *after* recovery, not before.
+  static Future<void> recoverInterruptedWrites(String vaultRoot) async {
+    final root = Directory(VaultPaths.notesRoot(vaultRoot));
+    if (!await root.exists()) return;
+
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      final name = p.basename(entity.path);
+
+      final tmpAt = name.lastIndexOf('$_tmpSuffix.');
+      if (tmpAt >= 0 && _looksLikeOurDebris(name, tmpAt)) {
+        // 未提交的临时文件：删掉。它可能是半截字节，留下只会被索引进索引。
+        await _deleteQuietly(entity);
+        continue;
+      }
+
+      final bakAt = name.lastIndexOf('$_bakSuffix.');
+      if (bakAt >= 0 && _looksLikeOurDebris(name, bakAt)) {
+        final target = File(p.join(p.dirname(entity.path),
+            name.substring(0, bakAt)));
+        if (await target.exists()) {
+          // 新文件已经在位（第一次 rename 之后、备份删除之前被杀）：
+          // 备份只是残留，删掉。
+          await _deleteQuietly(entity);
+        } else {
+          // 目标不在：这个备份就是上一版内容的唯一副本，搬回去。
+          await target.parent.create(recursive: true);
+          await entity.rename(target.path);
+        }
+      }
+    }
+  }
+
+  /// True when [name] is `<something-with-an-extension>.jotit-tmp.<token>` /
+  /// `.jotit-bak.<token>` and not a user file that merely contains the marker.
+  ///
+  /// The extension check is the discriminator: a real leftover always wraps a
+  /// real filename (`a.md.jotit-bak.7x`), while a note the user genuinely
+  /// named `weird.jotit-bak.md` parses to an extension-less target — and
+  /// renaming *that* would be the recovery destroying data.
+  static bool _looksLikeOurDebris(String name, int markerAt) {
+    final target = name.substring(0, markerAt);
+    return p.extension(target).isNotEmpty;
+  }
+
+  static Future<void> _deleteQuietly(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } on FileSystemException {
+      // 恢复是尽力而为：删不掉的 debris 会被扫描器忽略，不影响使用。
+    }
   }
 }

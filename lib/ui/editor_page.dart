@@ -44,6 +44,14 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// flag-based refill would happily fill the new page with the old note.
   String? _loadedPath;
 
+  /// Reaches the rich pane's state for one thing: flushing a serialisation
+  /// that is still inside its debounce before the page tears the pane down or
+  /// writes the buffer (P1-10). It replaces a per-note [ValueKey] because the
+  /// pane now survives note jumps — [RichEditorPane.didUpdateWidget] reloads
+  /// the document when the body changes — and a widget can carry only one
+  /// key.
+  final _richPaneKey = GlobalKey<RichEditorPaneState>();
+
   /// Where the next preview-tap lookup starts. Blocks are matched against
   /// source lines in document order, so tapping successive paragraphs walks
   /// the file downward instead of always matching the first occurrence.
@@ -56,6 +64,12 @@ class EditorPageState extends ConsumerState<EditorPage> {
   EditorView _view = EditorView.preview;
 
   String? _status;
+
+  /// A backup that failed before a rich save that still succeeded. Kept
+  /// apart from [_status] so the two facts never blur: the edit landed, the
+  /// safety copy did not, and showing that as "保存失败" would send the user
+  /// looking for an edit that is safely on disk.
+  String? _backupWarning;
 
   /// Whether this note may enter the rich-text editor. Notes carrying syntax
   /// the rich editor cannot round-trip (wiki links until they are wired in,
@@ -174,14 +188,26 @@ class EditorPageState extends ConsumerState<EditorPage> {
 
   Widget _body(EditableNote? note, String? path) {
     if (note == null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Text(
-            path == null ? '没有选中笔记' : '这个文件不能以 UTF-8 打开',
-            textAlign: TextAlign.center,
+      return Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Text(
+                  path == null ? '没有选中笔记' : '这个文件不能以 UTF-8 打开',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
           ),
-        ),
+          // The refusal page has no note to describe, but a save rejected
+          // here still has to say so: the Ctrl+S/Cmd+S binding reaches _save
+          // without passing the app bar's editable gate (P0-5), and a status
+          // with nowhere to render is indistinguishable from a save that
+          // silently worked.
+          _StatusBar(status: _status, onSave: _save),
+        ],
       );
     }
 
@@ -193,6 +219,9 @@ class EditorPageState extends ConsumerState<EditorPage> {
       _controller.text = note.text;
       _loadedPath = note.notePath;
       _matchCursor = 0;
+      // A backup warning belongs to the note it was raised for; carrying it
+      // onto the next one would blame an unrelated file.
+      _backupWarning = null;
       // The app bar above was built from the pre-refill pair (title reads as
       // a build-time side effect otherwise). One post-frame rebuild lets it
       // show the new note's title.
@@ -216,10 +245,13 @@ class EditorPageState extends ConsumerState<EditorPage> {
                   onTapBlock: _locateAndEdit,
                 ),
               EditorView.rich => RichEditorPane(
-                  key: ValueKey('rich-${note.notePath}'),
+                  key: _richPaneKey,
                   body:
                       const MarkdownParser().splitFrontMatter(_controller.text).body,
                   onChanged: _onRichChanged,
+                  // The debounce delays the *serialisation*; the dirty flag
+                  // must not wait for it (P1-10).
+                  onEditStarted: _markEdited,
                 ),
               EditorView.source => TextField(
                   key: const ValueKey('editor-body'),
@@ -248,6 +280,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
         _StatusBar(
           status: _status,
           note: note,
+          backupWarning: _backupWarning,
           onSave: _save,
         ),
       ],
@@ -263,6 +296,12 @@ class EditorPageState extends ConsumerState<EditorPage> {
     final current = ref.read(openNoteProvider);
     if (targetPath == current) return;
 
+    // A rich edit still inside the 250 ms debounce has not reached the
+    // controller yet. The jump reloads the pane's document, so anything left
+    // on the timer would be dropped with it (P1-10) — deliver it first, and
+    // let the discard dialog below decide with the full picture.
+    _richPaneKey.currentState?.flush();
+
     // Unsaved edits live only in this controller; jumping away is a navigation
     // the user asked for, but losing the text silently is not part of the
     // bargain. Same dialog, same wording, as leaving through the back button.
@@ -275,6 +314,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
     setState(() {
       _dirty = false;
       _status = null;
+      _backupWarning = null;
       _view = EditorView.preview;
     });
   }
@@ -326,6 +366,10 @@ class EditorPageState extends ConsumerState<EditorPage> {
           '该笔记包含富文本暂不支持的语法（双链/HTML/脚注等），请用源码模式编辑');
       return;
     }
+    // Leaving the rich view unmounts the pane, and its debounce dies with it:
+    // without this flush, an edit made in the last 250 ms is silently lost
+    // (P1-10).
+    if (_view == EditorView.rich) _richPaneKey.currentState?.flush();
     setState(() => _view = view);
   }
 
@@ -633,9 +677,38 @@ class EditorPageState extends ConsumerState<EditorPage> {
     return null;
   }
 
+  /// The path a save may write to, or null when writing would be wrong.
+  ///
+  /// `openNoteProvider` alone is not the controller's pair (P0-5): during a
+  /// wiki-link jump it already names the *new* note while the controller still
+  /// holds the old one, and a note that could not be decoded as UTF-8 never
+  /// fills the controller at all. Writing then puts one note's text under
+  /// another note's path — or empties a file the editor was never allowed to
+  /// touch. `_loadedPath` is the path the text on screen belongs to, so a save
+  /// is legitimate only while the two agree and the note is editable.
+  String? _writablePath() {
+    final path = _loadedPath;
+    if (path == null) return null;
+    if (path != ref.read(openNoteProvider)) return null;
+    if (ref.read(editableNoteProvider).asData?.value == null) return null;
+    return path;
+  }
+
   Future<void> _save() async {
-    final path = ref.watch(openNoteProvider);
-    if (path == null) return;
+    // P0-5: the write path must be the one the controller's text belongs to.
+    // The Ctrl+S/Cmd+S binding reaches this method without passing the app
+    // bar's `editable` gate, so the check lives here rather than at the
+    // call sites.
+    final path = _writablePath();
+    if (path == null) {
+      setState(() => _status = '当前笔记不可保存');
+      return;
+    }
+
+    // A rich edit still inside the pane's 250 ms debounce has not reached the
+    // controller; saving without flushing it would write the text from before
+    // the user's last burst (P1-10).
+    _richPaneKey.currentState?.flush();
 
     final session = await ref.read(vaultProvider.future);
     try {
@@ -646,6 +719,13 @@ class EditorPageState extends ConsumerState<EditorPage> {
       invalidateNotes(ref);
       setState(() {
         _dirty = false;
+        // saveRich is the only path that rolls a backup, and a no-op rich
+        // save returns before attempting one — so the field is read only
+        // after a real write, where it still belongs to *this* save. A
+        // stale warning from an earlier note would otherwise re-surface.
+        _backupWarning = hash != null && _view == EditorView.rich
+            ? session.lastBackupWarning
+            : null;
         _status = hash == null ? '内容没有变化' : '已保存';
       });
     } on Object catch (e) {
@@ -654,6 +734,17 @@ class EditorPageState extends ConsumerState<EditorPage> {
     }
   }
 
+  /// Runs the save path directly.
+  ///
+  /// The Ctrl+S/Cmd+S binding and the save button both end at [_save], and
+  /// the guard that keeps them honest lives there too. A test that synthesises
+  /// a key press has to first win a focus-tree fight that has nothing to do
+  /// with saving; calling the guarded method itself is the honest equivalent.
+  ///
+  /// Public for the same reason as [attachForTesting]: it is the test's entry
+  /// point into a flow whose only other front door is a platform channel.
+  Future<void> saveForTesting() => _save();
+
   /// §9.3: pick a file, copy it into the note's own `attachments/` folder, and
   /// write the normalised relative link into the text.
   ///
@@ -661,9 +752,11 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// button that does nothing when there is no note, or a refused path, or a
   /// missing plugin — is indistinguishable to the user from a broken app.
   Future<void> _attachFile() async {
-    final notePath = ref.read(openNoteProvider);
-    if (notePath == null) {
-      setState(() => _status = '先打开一篇笔记，再插入附件');
+    // Same pairing rule as a save (P0-5): the copy is about to be referenced
+    // from the text on screen, which only belongs to a note that is actually
+    // loaded and editable.
+    if (_writablePath() == null) {
+      setState(() => _status = '先打开一篇可编辑的笔记，再插入附件');
       return;
     }
 
@@ -696,9 +789,12 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// outside this file to gain by invoking it, and the alternative — mocking
   /// `file_selector`'s pigeon channels — tests the mock.
   Future<void> attachForTesting(String sourcePath) async {
-    final notePath = ref.read(openNoteProvider);
+    // P0-5: insert against the paired path, not whatever the open-note
+    // provider happens to say — during a jump the two disagree, and the copy
+    // would be filed under a note whose text is not on screen.
+    final notePath = _writablePath();
     if (notePath == null) {
-      setState(() => _status = '先打开一篇笔记，再插入附件');
+      setState(() => _status = '先打开一篇可编辑的笔记，再插入附件');
       return;
     }
 
@@ -715,6 +811,25 @@ class EditorPageState extends ConsumerState<EditorPage> {
       );
       if (!mounted) return;
 
+      // The copy is asynchronous: a wiki-link jump taken while it ran leaves
+      // the controller holding a *different* note than the one the attachment
+      // belongs to — the P0-5 pairing rule, checked again because time has
+      // passed. The copied file stays behind as an orphan, exactly as it does
+      // when the user simply never saves.
+      if (_writablePath() != notePath) {
+        setState(() {
+          _attaching = false;
+          _status = '笔记已经切换，这次插入没有链接进去';
+        });
+        return;
+      }
+
+      // The splice below edits the buffer by path and offset, so it needs the
+      // controller to hold the latest text: anything still on the rich pane's
+      // debounce is delivered first (P1-10), otherwise the insert would be
+      // layered over a stale buffer and the user's last burst rolled back.
+      _richPaneKey.currentState?.flush();
+
       final spliced = AttachmentWriter.spliceInto(
         _controller.text,
         _focus.hasFocus ? _controller.selection.baseOffset : _controller.text.length,
@@ -729,8 +844,17 @@ class EditorPageState extends ConsumerState<EditorPage> {
         );
         _dirty = true;
         _attaching = false;
-        _status = '已插入 ${insertion.linkTarget}（${_humanSize(insertion.size)}），'
-            '保存后同步';
+        if (_view == EditorView.rich && !_richAllowed) {
+          // An attachment link is `![[...]]` — wiki syntax the rich serialiser
+          // cannot round-trip, so the note may no longer be shown in rich
+          // mode. Leaving the user there would let the pane's next
+          // serialisation wipe the link that was just inserted (P1-11).
+          _view = EditorView.source;
+          _status = '附件链接暂不受富文本支持，已切回源码视图';
+        } else {
+          _status = '已插入 ${insertion.linkTarget}（${_humanSize(insertion.size)}），'
+              '保存后同步';
+        }
       });
       invalidateNotes(ref);
     } on AttachmentRefused catch (e) {
@@ -778,21 +902,29 @@ class EditorPageState extends ConsumerState<EditorPage> {
 class _StatusBar extends StatelessWidget {
   const _StatusBar({
     required this.status,
-    required this.note,
+    this.note,
+    this.backupWarning,
     required this.onSave,
   });
 
   final String? status;
-  final EditableNote note;
+
+  /// Null on the refusal page, where there is no note to describe.
+  final EditableNote? note;
+
+  /// A failed backup preceding a successful rich save, shown as its own line
+  /// so it is neither mistaken for a failed save nor lost under the status.
+  final String? backupWarning;
+
   final Future<void> Function() onSave;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final facts = <String>[
-      if (note.usedCrlf) 'CRLF',
-      if (note.hadBom) 'BOM',
-      if (note.hasUid) 'uid ${_abbreviate(note.uid!)}' else '无 uid',
+      if (note?.usedCrlf ?? false) 'CRLF',
+      if (note?.hadBom ?? false) 'BOM',
+      if (note?.hasUid ?? false) 'uid ${_abbreviate(note!.uid!)}' else '无 uid',
     ];
 
     return Container(
@@ -801,20 +933,46 @@ class _StatusBar extends StatelessWidget {
         color: theme.colorScheme.surfaceContainerHighest,
         border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: Text(
-              status ?? facts.join(' · '),
-              style: theme.textTheme.bodySmall,
-              overflow: TextOverflow.ellipsis,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  // With no note there are no facts to fall back to, and the
+                  // body above already says why nothing is loaded.
+                  status ?? (note == null ? '' : facts.join(' · ')),
+                  style: theme.textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (note != null && !note!.hasUid)
+                TextButton(
+                  onPressed: onSave,
+                  child: const Text('补写 uid'),
+                ),
+            ],
           ),
-          if (!note.hasUid)
-            TextButton(
-              onPressed: onSave,
-              child: const Text('补写 uid'),
+          if (backupWarning != null) ...[
+            const SizedBox(height: 2),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.warning_amber_outlined,
+                    size: 14, color: theme.colorScheme.error),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    backupWarning!,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+                ),
+              ],
             ),
+          ],
         ],
       ),
     );

@@ -353,6 +353,112 @@ void main() {
     });
   });
 
+  group('writeFileAtomic', () {
+    test('writes bytes outside notes/ with no debris left behind', () async {
+      // The rolling backup lives in .jotit/backups/, outside the synced
+      // subtree writeAtomic is confined to — same crash-safety dance, and
+      // the same "no temp litter" property.
+      final target = File(p.join(vault.path, '.jotit', 'backups', 'a.md.bak'));
+      await store.writeFileAtomic(target, utf8.encode('v1'));
+      await store.writeFileAtomic(target, utf8.encode('v2'));
+
+      expect(utf8.decode(target.readAsBytesSync()), 'v2');
+      final litter = Directory(p.join(vault.path, '.jotit', 'backups'))
+          .listSync()
+          .map((e) => p.basename(e.path))
+          .where((n) => n.contains('.jotit-tmp') || n.contains('.jotit-bak'));
+      expect(litter, isEmpty);
+    });
+  });
+
+  group('recoverInterruptedWrites', () {
+    Future<File> debris(String name, List<int> bytes) async {
+      final f = File(p.join(VaultPaths.notesRoot(vault.path), name));
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes(bytes, flush: true);
+      return f;
+    }
+
+    test('a leftover .jotit-tmp is deleted', () async {
+      // 未提交的临时文件：可能是半截字节，留下只会污染索引。
+      await debris('a.md.jotit-tmp.deadbeef', utf8.encode('half a note'));
+      await NoteFileStore.recoverInterruptedWrites(vault.path);
+      expect(
+          File(p.join(VaultPaths.notesRoot(vault.path),
+                  'a.md.jotit-tmp.deadbeef'))
+              .existsSync(),
+          isFalse);
+    });
+
+    test('a .jotit-bak is the only copy when the target is missing', () async {
+      // 两次 rename 之间进程被杀：备份是上一版内容的唯一副本，必须搬回去，
+      // 否则这篇笔记就此消失（扫描器故意忽略这些名字）。
+      await debris('b.md.jotit-bak.deadbeef',
+          utf8.encode('---\nuid: u-b\n---\n\nprevious\n'));
+
+      await NoteFileStore.recoverInterruptedWrites(vault.path);
+
+      final restored =
+          File(p.join(VaultPaths.notesRoot(vault.path), 'b.md'));
+      expect(restored.existsSync(), isTrue);
+      expect(utf8.decode(restored.readAsBytesSync()), contains('previous'));
+      expect(
+          File(p.join(VaultPaths.notesRoot(vault.path),
+                  'b.md.jotit-bak.deadbeef'))
+              .existsSync(),
+          isFalse,
+          reason: '搬回之后备份名必须消失，否则每次启动都重复搬');
+    });
+
+    test('a .jotit-bak is debris when the target is already in place', () async {
+      // 第一次 rename 之后、备份删除之前被杀：新文件已在位，备份只是残留。
+      await debris('c.md', utf8.encode('new'));
+      await debris('c.md.jotit-bak.deadbeef', utf8.encode('old'));
+
+      await NoteFileStore.recoverInterruptedWrites(vault.path);
+
+      expect(utf8.decode(File(p.join(VaultPaths.notesRoot(vault.path), 'c.md'))
+          .readAsBytesSync()), 'new');
+      expect(
+          File(p.join(VaultPaths.notesRoot(vault.path),
+                  'c.md.jotit-bak.deadbeef'))
+              .existsSync(),
+          isFalse);
+    });
+
+    test('recovers files in subdirectories', () async {
+      await debris('sub/d.md.jotit-bak.deadbeef', utf8.encode('deep'));
+
+      await NoteFileStore.recoverInterruptedWrites(vault.path);
+
+      expect(
+          File(p.join(VaultPaths.notesRoot(vault.path), 'sub', 'd.md'))
+              .existsSync(),
+          isTrue);
+    });
+
+    test('leaves ordinary files alone', () async {
+      final keep = await debris('e.md', utf8.encode('fine'));
+      await NoteFileStore.recoverInterruptedWrites(vault.path);
+      expect(utf8.decode(keep.readAsBytesSync()), 'fine');
+      expect(filesUnderNotes(), ['e.md']);
+    });
+
+    test('a user file that merely contains the marker is not debris', () async {
+      // 恢复不能反过来毁数据：`weird.jotit-bak.md` 是用户的笔记（扩展名
+      // .md，扫描器会索引它），不是我们的残留——按名字解析会把目标算成
+      // 无扩展名的 `weird`，这个判别条件把它排除在外。
+      final note = await debris('weird.jotit-bak.md', utf8.encode('# mine\n'));
+
+      await NoteFileStore.recoverInterruptedWrites(vault.path);
+
+      expect(utf8.decode(note.readAsBytesSync()), '# mine\n',
+          reason: 'the note must survive the recovery untouched');
+      expect(File(p.join(VaultPaths.notesRoot(vault.path), 'weird'))
+          .existsSync(), isFalse);
+    });
+  });
+
   group('ensureLayout', () {
     test('creates notes, _conflicts and .jotit', () async {
       for (final dir in [

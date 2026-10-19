@@ -170,6 +170,52 @@ void main() {
     });
   });
 
+  group('unknown collections (P0-4)', () {
+    test('a base path inside a 404 collection is unknown, not deleted', () {
+      // The folder would not answer. The server never said the note inside
+      // it was gone, so it must not be read as a deletion.
+      final snapshot = RemoteSnapshot(
+        entries: const {
+          'notes/daily': RemoteEntry(
+              path: 'notes/daily', etag: '"c1"', isCollection: true),
+        },
+        probedCtag: true,
+        unknownCollections: const {'notes/daily'},
+      );
+      final changes = RemoteDiff.between(
+        snapshot,
+        [base('notes/daily/a.md', etag: '"e1"')],
+      );
+      expect(changes.unknown, ['notes/daily/a.md']);
+      expect(changes.deleted, isEmpty);
+      expect(changes.isEmpty, isFalse,
+          reason: 'an unknown subtree is still something the round must '
+              'look at — it just must not delete anything');
+    });
+
+    test('isUnderUnknownCollection covers the collection and its children',
+        () {
+      final snapshot =
+          RemoteSnapshot(unknownCollections: const {'notes/daily'});
+      expect(snapshot.isUnderUnknownCollection('notes/daily'), isTrue);
+      expect(snapshot.isUnderUnknownCollection('notes/daily/deep/a.md'), isTrue);
+      expect(snapshot.isUnderUnknownCollection('notes/dailyish/a.md'), isFalse,
+          reason: 'a prefix match must land on a segment boundary');
+      expect(snapshot.isUnderUnknownCollection('notes/a.md'), isFalse);
+    });
+
+    test('an empty unknown set marks nothing', () {
+      final snapshot = RemoteSnapshot(entries: const {});
+      expect(snapshot.isUnderUnknownCollection('notes/a.md'), isFalse);
+      final changes = RemoteDiff.between(
+        snapshot,
+        [base('notes/a.md', etag: '"e1"')],
+      );
+      expect(changes.deleted, ['notes/a.md']);
+      expect(changes.unknown, isEmpty);
+    });
+  });
+
   group('CTag fast path', () {
     test('an unchanged CTag lets the walk be skipped', () {
       final snapshot = RemoteSnapshot(

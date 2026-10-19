@@ -301,6 +301,17 @@ ON CONFLICT(sync_root_id, path) DO UPDATE SET
   }
 
   /// Records that copies were written and the user still has to choose.
+  ///
+  /// Upsert, not update. A pure UPDATE can only annotate a row that already
+  /// exists, and "this path conflicted" is exactly the moment there may be no
+  /// row: a path that has never synced has no merge base to update. The copies
+  /// land on disk, the UPDATE affects zero rows, and the conflict is silently
+  /// lost — Settings' "needs attention" list has nothing to show, so a
+  /// conflict nobody can see is a conflict nobody resolves. Same shape and
+  /// same reason as [notePreconditionFailed], which already upserts.
+  ///
+  /// `path`/`uid` are only written on insert (uid is not known here and stays
+  /// NULL); the conflict path never rewrites an existing note's identity.
   Future<void> markConflict({
     required String syncRootId,
     required String path,
@@ -308,15 +319,15 @@ ON CONFLICT(sync_root_id, path) DO UPDATE SET
     required String copyDir,
     int? at,
   }) async {
-    await _root.update(
-      'sync_meta',
-      {
-        'conflict_state': state.wire,
-        'conflict_copy_dir': copyDir,
-        'last_synced_at': at,
-      },
-      where: 'sync_root_id = ? AND path = ?',
-      whereArgs: [syncRootId, path],
+    await _root.rawInsert(
+      '''
+INSERT INTO sync_meta (sync_root_id, path, conflict_state, conflict_copy_dir, last_synced_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(sync_root_id, path) DO UPDATE SET
+  conflict_state    = excluded.conflict_state,
+  conflict_copy_dir = excluded.conflict_copy_dir,
+  last_synced_at    = excluded.last_synced_at''',
+      <Object?>[syncRootId, path, state.wire, copyDir, at],
     );
   }
 

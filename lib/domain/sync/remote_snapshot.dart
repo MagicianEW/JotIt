@@ -32,7 +32,9 @@ class RemoteSnapshot {
     Map<String, RemoteEntry>? entries,
     this.collectionCtag,
     this.probedCtag = false,
-  }) : entries = entries ?? <String, RemoteEntry>{};
+    Set<String>? unknownCollections,
+  })  : entries = entries ?? <String, RemoteEntry>{},
+        unknownCollections = unknownCollections ?? const <String>{};
 
   /// Every resource under the synced subtree, keyed by vault path.
   final Map<String, RemoteEntry> entries;
@@ -45,6 +47,26 @@ class RemoteSnapshot {
   /// Distinguishes "the server said there is no CTag" from "we did not ask".
   /// Only the former justifies falling back to a full depth=1 walk.
   final bool probedCtag;
+
+  /// Collections whose listing came back 404 this round (P0-4).
+  ///
+  /// A 404 on a *sub*collection is not proof the folder was deleted — it is
+  /// proof the server would not talk about it. Reading its contents as
+  /// deleted propagates a deletion nobody asked for; reading them as
+  /// present invents state. So they are recorded here as *unknown*, and
+  /// [isUnderUnknownCollection] lets the engine leave that whole subtree
+  /// alone for the round instead of guessing.
+  final Set<String> unknownCollections;
+
+  /// True when [path] is, or sits inside, a collection whose state is
+  /// unknown this round.
+  bool isUnderUnknownCollection(String path) {
+    if (unknownCollections.isEmpty) return false;
+    for (final collection in unknownCollections) {
+      if (path == collection || path.startsWith('$collection/')) return true;
+    }
+    return false;
+  }
 
   Iterable<RemoteEntry> get files =>
       entries.values.where((e) => !e.isCollection);
@@ -98,7 +120,8 @@ class RemoteChanges {
   /// matrix weighs this against the local state (§5.3 rows 4 and 5).
   final List<String> deleted;
 
-  /// Present on both sides but not comparable.
+  /// Present on both sides but not comparable — or inside a collection whose
+  /// listing came back 404, so the server never said either way.
   final List<String> unknown;
 
   bool get isEmpty =>
@@ -146,8 +169,20 @@ abstract final class RemoteDiff {
 
     final deleted = base
         .map((r) => r.path)
-        .where((path) => !snapshot.entries.containsKey(path))
+        .where((path) =>
+            !snapshot.entries.containsKey(path) &&
+            !snapshot.isUnderUnknownCollection(path))
         .toList();
+
+    // P0-4: a base path inside a collection that would not answer is not a
+    // deletion — the server never said the file was gone. Downgrading it to
+    // `unknown` is what stops a 404 on one folder from being read as
+    // "delete every note inside it".
+    final unknownByCollection = base
+        .map((r) => r.path)
+        .where(snapshot.isUnderUnknownCollection)
+        .toList();
+    unknown.addAll(unknownByCollection);
 
     added.sort();
     changed.sort();

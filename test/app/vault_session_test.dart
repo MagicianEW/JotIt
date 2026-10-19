@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/app/vault_session.dart';
+import 'package:jotit/data/vault/note_file_store.dart';
 import 'package:path/path.dart' as p;
 
 import '../support/boot_app.dart';
@@ -117,6 +119,30 @@ void main() {
         );
       }
     });
+
+    test('an existing note is never overwritten by a same-name create',
+        () async {
+      // P1-12: 同名直接覆盖会把旧内容换成 `# name` 存根，且无法恢复。
+      await put('notes/a.md',
+          utf8.encode('---\nuid: u-a\n---\n\noriginal content\n'));
+      await vault.reindex();
+
+      final path = await vault.createNote(title: 'a');
+
+      expect(path, 'notes/a-1.md');
+      expect(utf8.decode(await get('notes/a.md')), contains('original content'),
+          reason: 'the existing note must survive byte for byte');
+      final created = await vault.readForEdit(path);
+      expect(created!.hasUid, isTrue);
+    });
+
+    test('the free-name search skips past every taken name', () async {
+      await put('notes/a.md', utf8.encode('---\nuid: u-a\n---\n\none\n'));
+      await put('notes/a-1.md', utf8.encode('---\nuid: u-a1\n---\n\ntwo\n'));
+      await vault.reindex();
+
+      expect(await vault.createNote(title: 'a'), 'notes/a-2.md');
+    });
   });
 
   group('editing', () {
@@ -182,6 +208,39 @@ void main() {
       expect(await vault.readForEdit('notes/gbk.md'), isNull);
     });
 
+    test('saving a non-UTF-8 file fails loudly and changes nothing', () async {
+      // P0-5 的库层根因：encodeLike 的 allowMalformed 会把无法解码的字节
+      // 静默换成 U+FFFD，再被同步推给所有设备。库层必须拒绝，让 UI 显示
+      // 保存失败——"保存 GBK 笔记"从毁数据变成明确失败是期望行为。
+      final gbk = <int>[0xD6, 0xD0, 0xCE, 0xC4, 0x0A];
+      await put('notes/gbk.md', gbk);
+      await vault.reindex();
+
+      await expectLater(
+        vault.save('notes/gbk.md', '# 覆盖\n'),
+        throwsA(isA<StateError>()),
+      );
+      expect(await get('notes/gbk.md'), gbk,
+          reason: 'the original bytes must survive untouched');
+    });
+
+    test('a failed backup does not abort the save it precedes', () async {
+      // 备份失败不能拖着保存一起失败：用户的编辑在保存落盘前只活在内存里。
+      // 用"backups 是文件而不是目录"制造确定性失败。
+      await File(p.join(root.path, '.jotit', 'backups'))
+          .writeAsBytes(utf8.encode('not a directory'), flush: true);
+      await put('notes/a.md', utf8.encode('---\nuid: u-a\n---\n\nv1\n'));
+      await vault.reindex();
+
+      final hash =
+          await vault.saveRich('notes/a.md', '---\nuid: u-a\n---\n\nv2\n');
+
+      expect(hash, isNotNull, reason: 'the save must still happen');
+      expect(utf8.decode(await get('notes/a.md')), contains('v2'));
+      expect(vault.lastBackupWarning, isNotNull,
+          reason: '失败要单独提示，不能静默');
+    });
+
     test('saving reindexes so the list reflects the edit', () async {
       final path = await vault.createNote(title: 'a');
       await vault.save(path, '---\nuid: u-x\ntitle: Renamed\n---\n\nbody\n');
@@ -189,6 +248,87 @@ void main() {
       final note = await vault.notes.byPath(path);
       expect(note!.title, 'Renamed');
       expect(note.contentHash, isNotNull);
+    });
+  });
+
+  group('startup recovery', () {
+    /// Reopens the vault over the same root, as a fresh process would.
+    Future<VaultSession> reopen() async {
+      await vault.close();
+      vault = await VaultSession.open(root.path);
+      return vault;
+    }
+
+    test('an interrupted write is recovered before the first reindex', () async {
+      // P1-14: 两次 rename 之间进程被杀 → 唯一副本是 .jotit-bak，扫描器
+      // 故意忽略它，全库无恢复逻辑——笔记就此消失，直到用户手动翻出来。
+      final dir = Directory(p.join(root.path, 'notes'));
+      await dir.create(recursive: true);
+      await File(p.join(dir.path, 'lost.md.jotit-bak.tok')).writeAsBytes(
+          utf8.encode('---\nuid: u-lost\n---\n\nrecovered\n'), flush: true);
+      await File(p.join(dir.path, 'half.md.jotit-tmp.tok'))
+          .writeAsBytes(utf8.encode('half'), flush: true);
+
+      await reopen();
+
+      expect(await vault.notes.byPath('notes/lost.md'), isNotNull,
+          reason: '恢复必须先于 reindex，索引才能看到搬回来的文件');
+      expect(
+        File(p.join(dir.path, 'half.md.jotit-tmp.tok')).existsSync(),
+        isFalse,
+        reason: '未提交的临时文件必须清掉',
+      );
+    });
+
+    test('a backup beside an already-written target is debris', () async {
+      final dir = Directory(p.join(root.path, 'notes'));
+      await dir.create(recursive: true);
+      // 带 uid，免得 open 时的 reindex 回填 uid 改掉字节，干扰对恢复的断言。
+      await File(p.join(dir.path, 'c.md')).writeAsBytes(
+          utf8.encode('---\nuid: u-c\n---\n\nnew\n'), flush: true);
+      await File(p.join(dir.path, 'c.md.jotit-bak.tok'))
+          .writeAsBytes(utf8.encode('old'), flush: true);
+
+      await reopen();
+
+      expect(utf8.decode(await get('notes/c.md')), '---\nuid: u-c\n---\n\nnew\n');
+      expect(File(p.join(dir.path, 'c.md.jotit-bak.tok')).existsSync(), isFalse);
+    });
+  });
+
+  group('save vs. the scanner backfill', () {
+    /// A [NoteFileStore] that can park the save's write at a chosen point,
+    /// standing in for the exact interleaving a crash-prone event loop can
+    /// produce: the backfill and the save both mid-flight on one file.
+    late _GatedStore store;
+
+    setUp(() async {
+      await vault.close();
+      store = _GatedStore(vaultRoot: root.path);
+      vault = await VaultSession.open(root.path, files: store);
+    });
+
+    test('the identity is minted once, whichever runs first', () async {
+      // P1-17: 保存的两个读点都没看到 uid 时写出无 uid 文本，ensureUid 再
+      // 铸新 uid；与 reindex 回填 uid 交错 → 身份静默漂移。锁保证整个
+      // 读-改-写序列与回填互斥，uid 只会被铸一次。
+      await vault.writeRaw('notes/race.md', utf8.encode('# race\n'));
+      store.arm(); // 此后对 race.md 的写入在落盘前挂起
+
+      final saveFuture = vault.save('notes/race.md', '# race\n\nedited\n');
+      final reindexFuture = vault.reindex();
+      // 让两边都到达各自的第一个让出点：交错必须真实发生，而不是碰巧串行。
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      store.release();
+      await Future.wait([saveFuture, reindexFuture]);
+
+      final editable = await vault.readForEdit('notes/race.md');
+      final row = await vault.notes.byPath('notes/race.md');
+      expect(editable!.uid, isNotNull);
+      expect(editable.uid, row!.uid, reason: '文件与索引的身份必须一致');
+      expect(store.ensureUidWrote, <bool>[true, false],
+          reason: 'uid 只能铸一次：先到的那次真正写入（true），后到的必须发现 '
+              '已有 uid、什么都不做（false）——出现两次 true 就是身份漂移');
     });
   });
 
@@ -237,4 +377,40 @@ void main() {
       expect(find.text('Alpha'), findsWidgets);
     });
   });
+}
+
+/// A store whose `writeAtomic` can be parked mid-save, and that records every
+/// [NoteFileStore.ensureUid] outcome — the two seams the uid-drift race needs
+/// to be observed deterministically.
+class _GatedStore extends NoteFileStore {
+  _GatedStore({required super.vaultRoot});
+
+  final Completer<void> _gate = Completer<void>();
+  bool _armed = false;
+
+  /// Whether each `ensureUid` call actually wrote bytes (true) or found a
+  /// uid already there and did nothing (false). Exactly one `true` means no
+  /// drift; two means the race this lock exists to prevent.
+  final List<bool> ensureUidWrote = <bool>[];
+
+  /// Parks the next `writeAtomic` until [release] is called.
+  void arm() => _armed = true;
+
+  void release() {
+    _armed = false;
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<void> writeAtomic(String notePath, List<int> bytes) async {
+    if (_armed) await _gate.future;
+    return super.writeAtomic(notePath, bytes);
+  }
+
+  @override
+  Future<List<int>?> ensureUid(String notePath, String uid) async {
+    final result = await super.ensureUid(notePath, uid);
+    ensureUidWrote.add(result != null);
+    return result;
+  }
 }

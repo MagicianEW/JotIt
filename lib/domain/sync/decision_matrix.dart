@@ -218,12 +218,23 @@ SyncDecision classifySync(SyncObservation o) {
   // rename on the remote side, not a conflict. Checked before any equality
   // test because a renamed file legitimately has no local counterpart at the
   // new path yet.
+  //
+  // P0-3: the adoption is only safe while the *target* path does not
+  // already hold a different note locally. A file there with another uid
+  // makes this a path collision that merely looks like a rename, and a
+  // file there with no uid is unprovable either way — C3 refuses both.
+  // Falling through sends the case to the identity comparison below, which
+  // keeps both copies instead of destroying the local one.
   final knownPath = o.knownBasePathForRemoteUid;
   if (o.remoteExists && remoteUid != null && knownPath != null && knownPath != o.path) {
-    return SyncDecision(
-      SyncAction.remoteRenameAdopt,
-      detail: 'uid ${_short(remoteUid)} was last synced at $knownPath',
-    );
+    final targetHoldsOtherIdentity =
+        o.localExists && (localUid == null || localUid != remoteUid);
+    if (!targetHoldsOtherIdentity) {
+      return SyncDecision(
+        SyncAction.remoteRenameAdopt,
+        detail: 'uid ${_short(remoteUid)} was last synced at $knownPath',
+      );
+    }
   }
 
   // Row 1 (both absent) — nothing at either end.
@@ -292,15 +303,21 @@ SyncDecision classifySync(SyncObservation o) {
             'two devices each created this path',
       );
     }
-  } else if (remoteUid == null) {
-    // A remote file with no `uid` — created externally and never stamped.
-    // We cannot tell "our note with a stripped header" from "someone else's
-    // file", so C3 applies: report a conflict rather than overwrite.
+  } else if (localUid == null || remoteUid == null) {
+    // A file with no readable `uid` on either side — created externally and
+    // never stamped, or stamped and then stripped. We cannot tell "our note
+    // with a mangled header" from "someone else's file", so C3 applies:
+    // report a conflict rather than overwrite.
+    //
+    // The local direction matters as much as the remote one. Without it, a
+    // local file whose identity cannot be read fell through to the rows
+    // below and was either uploaded over a remote note or downloaded over —
+    // a silent overwrite of a file nobody could identify.
     return const SyncDecision(
       SyncAction.trueConflict,
       preserveLocal: true,
       preserveRemote: true,
-      detail: 'remote file has no uid; refusing to overwrite without identity',
+      detail: 'a file has no uid; refusing to overwrite without identity',
     );
   }
 

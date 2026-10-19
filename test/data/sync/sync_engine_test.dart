@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:jotit/core/content_hash.dart';
 import 'package:jotit/core/vault_paths.dart';
 import 'package:jotit/data/dav/dav_capabilities.dart';
 import 'package:jotit/data/dav/dav_client.dart';
@@ -642,6 +643,93 @@ void main() {
               'rename and a delete instead');
       expect(moved.baseEtag, isNotNull);
     });
+
+    test('a remote rename adopts the remote content, not the stale local copy',
+        () async {
+      // P0-1: the old branch renamed the local file and committed a base
+      // built from the remote ETag plus the *local* hash, having never
+      // fetched the body. This device then sat on v1 believing it was in
+      // sync, and its next upload silently overwrote the other device's
+      // edit with that stale content.
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+
+      await renameRemote('notes/old.md', 'notes/new.md', 'u-a');
+      await dav.seedRemote(
+          'notes/new.md', utf8.encode(note('u-a', 'A', 'v2 edited remotely')));
+
+      final result = await run();
+
+      expect(result.error, isNull);
+      expect(await readLocal('notes/new.md'), contains('v2 edited remotely'));
+      // The base must describe the bytes actually on disk.
+      final onDisk = (await files.readBytesIfPresent('notes/new.md'))!;
+      final record = await meta.byPath(rootId, 'notes/new.md');
+      expect(record!.baseContentHash, ContentHash.ofBytes(onDisk));
+      expect(record.baseEtag, isNotNull);
+
+      // And the round that follows must agree it has nothing left to do.
+      final second = await run();
+      expect(second.downloaded, isEmpty);
+      expect(second.uploaded, isEmpty);
+    });
+
+    test('a rename with an unsynced local edit keeps the edit in _conflicts/',
+        () async {
+      // P0-1 + C3: the rename is adopted (the uid proves it is the same
+      // note), but the local edit cannot be accounted for, so its bytes are
+      // preserved before the remote content replaces the file.
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+
+      await renameRemote('notes/old.md', 'notes/new.md', 'u-a');
+      await dav.seedRemote(
+          'notes/new.md', utf8.encode(note('u-a', 'A', 'v2 remote')));
+      await writeLocal('notes/old.md', 'my unsynced edit', uid: 'u-a', title: 'A');
+
+      await run();
+
+      expect(await readLocal('notes/new.md'), contains('v2 remote'),
+          reason: 'the rename is still adopted');
+      final dirs = ConflictWriter.pending(vault.path);
+      expect(dirs, isNotEmpty);
+      final preserved = await _side(vault.path, dirs.single, 'local.md');
+      expect(preserved, isNotNull);
+      expect(utf8.decode(preserved!), contains('my unsynced edit'),
+          reason: 'the edit survives somewhere, or it is simply gone');
+
+      final record = await meta.byPath(rootId, 'notes/new.md');
+      expect(record!.conflictState.isUnresolved, isTrue);
+      expect(record.conflictCopyDir, isNotNull);
+      // The base still matches the bytes on disk.
+      final onDisk = (await files.readBytesIfPresent('notes/new.md'))!;
+      expect(record.baseContentHash, ContentHash.ofBytes(onDisk));
+    });
+
+    test('a rename onto a local file with a different uid keeps both',
+        () async {
+      // P0-3: the target path already holds another device's note. Row 3
+      // used to fire anyway, and the engine deleted the local file without
+      // a copy — an unsynced note destroyed by a rename it had no part in.
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+
+      await writeLocal('notes/new.md', 'local side', uid: 'u-local',
+          title: 'Local');
+      await renameRemote('notes/old.md', 'notes/new.md', 'u-a');
+
+      final result = await run();
+
+      expect(result.conflicts, contains('notes/new.md'));
+      expect(await readLocal('notes/new.md'), contains('local side'),
+          reason: 'the local note at the target path is not destroyed');
+      final dirs = ConflictWriter.pending(vault.path);
+      expect(dirs, isNotEmpty);
+      final remote = await _side(vault.path, dirs.single, 'remote.md');
+      expect(remote, isNotNull);
+      expect(utf8.decode(remote!), contains('v1'),
+          reason: 'and the remote copy is preserved too');
+    });
     test('a remote deletion propagates to a note nobody edited', () async {
       await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'v1')));
       await run();
@@ -676,6 +764,88 @@ void main() {
     });
   });
 
+  group('an unreachable remote (P0-4)', () {
+    test('a 404 on the synced root aborts the round instead of deleting the '
+        'vault', () async {
+      await writeLocal('notes/a.md', 'body', uid: 'u-a', title: 'A');
+      await writeLocal('notes/b.md', 'body', uid: 'u-b', title: 'B');
+      await run();
+      expect(await dav.remoteExists('notes/a.md'), isTrue);
+
+      // The whole subtree disappears from the server — a mistyped baseUrl,
+      // a renamed share, a box mid-restart. Reading the 404 as "an empty
+      // collection" used to delete every note in the vault.
+      await Directory(p.join(dav.root.path, 'notes')).delete(recursive: true);
+
+      now += 1000;
+      final result = await engine.run(syncRootId: rootId, nowMs: now);
+
+      expect(result.error, isNotNull);
+      expect(result.error, contains('远端状态不明'));
+      expect(result.deleted, isEmpty);
+      expect(await files.readBytesIfPresent('notes/a.md'), isNotNull,
+          reason: 'an unreachable server is not a deletion');
+      expect(await files.readBytesIfPresent('notes/b.md'), isNotNull);
+    });
+
+    test('a first round against an empty server still uploads', () async {
+      // The other half of the same check: with no base at all, a missing
+      // synced root is a legitimate first round, not an abort.
+      await dav.dispose();
+      dav = await DavHarness.start(extraArgs: ['--strict-collections']);
+      await roots.upsert(SyncRootRecord(
+        id: rootId,
+        name: 'test',
+        baseUrl: dav.baseUri().toString(),
+        username: 'testuser',
+      ));
+      engine = SyncEngine(
+        dav: dav.client(),
+        files: files,
+        notes: notes,
+        meta: meta,
+        roots: roots,
+        vaultRoot: vault.path,
+      );
+
+      await writeLocal('notes/a.md', 'body', uid: 'u-a', title: 'A');
+      final result = await run();
+
+      expect(result.error, isNull);
+      expect(result.uploaded, contains('notes/a.md'));
+    });
+
+    test('a 404 on a subfolder is unknown, not a deletion', () async {
+      await dav.seedRemote('notes/sub/a.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      expect(await readLocal('notes/sub/a.md'), contains('v1'));
+
+      // The parent still lists the collection, but listing the collection
+      // itself 404s — the shape a raced deletion or a sulking server
+      // produces. The server never said the note was gone.
+      engine = SyncEngine(
+        dav: _SubfolderVanishes(
+          inner: dav.client(),
+          path: 'notes/sub',
+        ),
+        files: files,
+        notes: notes,
+        meta: meta,
+        roots: roots,
+        vaultRoot: vault.path,
+      );
+
+      final result = await run();
+
+      expect(result.deleted, isNot(contains('notes/sub/a.md')));
+      expect(result.downloaded, isEmpty);
+      expect(await readLocal('notes/sub/a.md'), contains('v1'),
+          reason: 'the server never said this note was gone');
+      expect(await dav.remoteExists('notes/sub/a.md'), isTrue,
+          reason: 'and nothing was deleted from the server either');
+    });
+  });
+
   group('session bookkeeping', () {
     test('a successful round stores the CTag', () async {
       await writeLocal('notes/a.md', 'body', uid: 'u-a', title: 'A');
@@ -707,7 +877,13 @@ void main() {
 
       final result = await failing.run(syncRootId: rootId, nowMs: now);
       expect(result.error, isNotNull);
-      expect(failing.state, SyncState.backoff);
+      // P1-4: the round ends at idle, not wedged in `backoff`. The machine
+      // only tracks whether a session is in flight; the deadline that
+      // actually guards the retry is the one persisted on `sync_roots`
+      // below. A machine left in `backoff` refuses every future trigger,
+      // which is a single-flight lock that never unlocks.
+      expect(failing.state, SyncState.idle);
+      expect(failing.isRunning, isFalse);
 
       await failing.recordFailure(
           syncRootId: rootId, nowMs: now, retryCount: 2, error: result.error!);
@@ -717,6 +893,50 @@ void main() {
       expect(root.lastError, isNotNull);
       expect(root.isReadyAt(now), isFalse,
           reason: 'a root still inside its backoff must refuse a fresh start');
+    });
+
+    test('a failed round does not wedge the instance for the next one',
+        () async {
+      // P1-4: the second `run()` used to be answered by the single-flight
+      // guard with an empty result — the machine never left `backoff`, so
+      // the same instance could never sync again for the life of the
+      // process.
+      final failing = SyncEngine(
+        dav: DavClient(
+          baseUri: dav.baseUri(),
+          username: 'testuser',
+          password: 'wrong-password',
+        ),
+        files: files,
+        notes: notes,
+        meta: meta,
+        roots: roots,
+        vaultRoot: vault.path,
+      );
+
+      final first = await failing.run(syncRootId: rootId, nowMs: now);
+      expect(first.error, isNotNull);
+      final second = await failing.run(syncRootId: rootId, nowMs: now);
+      expect(second.error, isNotNull,
+          reason: 'a refused single-flight round returns no error; a real '
+              'attempt that fails again does');
+    });
+
+    test('a nothing-to-do round still leaves the machine able to run',
+        () async {
+      // P1-4: the "nothing to do" early return used to leave the machine in
+      // `diffBuild`, so the third round below was refused as "already
+      // running" and the remote note was never downloaded.
+      await writeLocal('notes/a.md', 'body', uid: 'u-a', title: 'A');
+      await run();
+
+      final quiet = await run();
+      expect(quiet.isEmpty, isTrue);
+
+      await dav.seedRemote('notes/b.md', utf8.encode(note('u-b', 'B', 'x')));
+      final third = await run();
+      expect(third.downloaded, contains('notes/b.md'));
+      expect(engine.state, SyncState.idle);
     });
 
     test('a second concurrent session is refused, not run in parallel',
@@ -905,6 +1125,89 @@ class _MutateOnFirstGet extends DavClient {
   @override
   Future<bool> delete(String path, {String? ifMatch}) =>
       _inner.delete(path, ifMatch: ifMatch);
+
+  @override
+  Future<DavCapabilities> probe() => _inner.probe();
+
+  @override
+  Future<void> close() => _inner.close();
+}
+
+/// A client whose listing of one subfolder 404s while the parent still lists
+/// it — the shape a raced deletion or a sulking server produces.
+///
+/// Everything else is delegated, so the round is otherwise a normal one
+/// against the real server.
+class _SubfolderVanishes extends DavClient {
+  _SubfolderVanishes({required DavClient inner, required this.path})
+      : _inner = inner,
+        super(
+          baseUri: inner.baseUri,
+          username: inner.username,
+          password: inner.password,
+          capabilities: inner.capabilities,
+        );
+
+  final DavClient _inner;
+  final String path;
+
+  @override
+  Future<DavListing?> listCollection(String collectionPath) {
+    if (collectionPath == path) return Future<DavListing?>.value(null);
+    return _inner.listCollection(collectionPath);
+  }
+
+  @override
+  Future<DavListing> propfind(String p, {int depth = 1}) =>
+      _inner.propfind(p, depth: depth);
+
+  @override
+  Future<DavResource?> stat(String p) => _inner.stat(p);
+
+  @override
+  Future<List<int>?> get(String p, {int? expectedLength}) =>
+      _inner.get(p, expectedLength: expectedLength);
+
+  @override
+  Future<DavPutResult> put(
+    String p,
+    List<int> bytes, {
+    DavCondition condition = const DavUnconditional(),
+    String contentType = 'text/markdown; charset=utf-8',
+  }) =>
+      _inner.put(p, bytes, condition: condition, contentType: contentType);
+
+  @override
+  Future<DavPutResult> putStream(
+    String p,
+    Stream<List<int>> content, {
+    required int contentLength,
+    String contentType = 'application/octet-stream',
+    DavCondition condition = const DavUnconditional(),
+    void Function(int sent)? onProgress,
+    Duration? timeoutOverride,
+  }) =>
+      _inner.putStream(
+        p,
+        content,
+        contentLength: contentLength,
+        contentType: contentType,
+        condition: condition,
+        onProgress: onProgress,
+        timeoutOverride: timeoutOverride,
+      );
+
+  @override
+  Future<void> ensureCollection(String collectionPath) =>
+      _inner.ensureCollection(collectionPath);
+
+  @override
+  Future<bool> delete(String p, {String? ifMatch}) =>
+      _inner.delete(p, ifMatch: ifMatch);
+
+  @override
+  Future<void> move(String fromPath, String toPath, {bool overwrite = false}) =>
+      _inner.move(fromPath, toPath, overwrite: overwrite);
 
   @override
   Future<DavCapabilities> probe() => _inner.probe();

@@ -191,15 +191,35 @@ class DavClient {
         // truncates mid-body and the server records a short file. `addStream`
         // applies the pause the transport asks for and waits for the drain.
         var sent = 0;
-        await sink.addStream(bodyStream!.map((chunk) {
-          sent += chunk.length;
-          // Bytes rather than a percentage: a percentage needs a total the
-          // caller may only learn partway through, and a progress bar that
-          // has to be re-based mid-flight is worse than one that counts up.
-          onProgress?.call(sent);
-          return chunk;
-        }));
-        await sink.close();
+        try {
+          // P1-8: both of these futures sat outside every timeout, so a
+          // server that accepted the headers and then never read the body
+          // hung the sync round forever. They now get the same budget as
+          // the response wait, which `putStream` scales with the payload.
+          await sink.addStream(bodyStream!.map((chunk) {
+            sent += chunk.length;
+            // Bytes rather than a percentage: a percentage needs a total the
+            // caller may only learn partway through, and a progress bar that
+            // has to be re-based mid-flight is worse than one that counts up.
+            onProgress?.call(sent);
+            return chunk;
+          })).timeout(timeoutOverride ?? timeout);
+          await sink.close().timeout(timeoutOverride ?? timeout);
+        } on TimeoutException catch (e) {
+          // Abort the in-flight request rather than leaving the socket open
+          // for the server's own timeout to collect. The error the aborted
+          // request produces is swallowed — this round has already failed,
+          // and an unhandled error on the abandoned `send` future would take
+          // down the isolate. The outer handler turns this into a
+          // DavException the engine can report against the attachment.
+          sendFuture.then((_) {}, onError: (Object _) {});
+          try {
+            sink.addError(e);
+          } on Object {
+            // Already closed or closing; nothing left to abort.
+          }
+          rethrow;
+        }
       }
       final streamed = await sendFuture.timeout(timeoutOverride ?? timeout);
       response = await http.Response.fromStream(streamed)
@@ -589,15 +609,29 @@ class DavClient {
 
   /// Delete a file. A missing file is success: the postcondition the caller
   /// cares about is "it is gone", not "it was there a moment ago".
+  ///
+  /// [ifMatch] is honoured only when the server can actually evaluate it:
+  ///
+  ///  * RFC 7232 compares `If-Match` **strongly**, so a weak-ETag server
+  ///    answers 412 forever no matter how fresh the tag is;
+  ///  * a server that does not evaluate the header accepts the delete
+  ///    regardless, so sending one would have the caller believe a
+  ///    precondition was honoured when it never left the client.
+  ///
+  /// In both cases this degrades to an unconditional DELETE — the same
+  /// trade the engine's `_conditionFor` makes for writes, since §6.3
+  /// accepts the narrow lost-update window on the nginx-dav and weak-ETag
+  /// profiles. It deliberately does **not** throw: the ArgumentError this
+  /// used to raise escaped every `on DavException` handler in the engine
+  /// and took the whole round down with it, on a delete that was perfectly
+  /// safe to perform.
   Future<bool> delete(String path, {String? ifMatch}) async {
     final uri = urlFor(path);
     final headers = <String, String>{};
-    if (ifMatch != null) {
-      if (!capabilities.supportsIfMatch) {
-        throw ArgumentError(
-            'refusing to send If-Match to a server known not to evaluate it',
-            'ifMatch');
-      }
+    if (ifMatch != null &&
+        ifMatch.isNotEmpty &&
+        capabilities.supportsIfMatch &&
+        !capabilities.etagIsWeak) {
       headers['If-Match'] = ifMatch;
     }
     try {

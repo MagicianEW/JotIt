@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
@@ -143,11 +144,25 @@ class AttachmentWriter {
     final target = File(p.joinAll([vaultRoot, ...p.split(vaultPath)]));
     await target.parent.create(recursive: true);
 
-    // `writeAsBytes` with exclusive semantics, not `exclusive: false`: ADR-11
-    // means this path must never already exist, and if it somehow does the
-    // right outcome is a failure the user is told about rather than a silent
-    // overwrite of an immutable file.
-    await target.writeAsBytes(payload, flush: true);
+    // ADR-11 排他语义，显式检查而不是依赖 writeAsBytes 的默认参数：目标
+    // 已存在必须失败并告知用户，而不是静默覆盖一个不可变文件。
+    if (await target.exists()) {
+      throw const AttachmentRefused('已存在同名附件，拒绝覆盖（附件内容不可变）');
+    }
+
+    // tmp + rename 原子写。直写 `target.writeAsBytes` 的话，复制中途崩溃
+    // 会留下一个截断的附件——它随后会被索引进索引、被同步推给所有设备，
+    // 而路径不可变意味着这个损坏永远无法修正。
+    final token = Random.secure().nextInt(1 << 30).toRadixString(36);
+    final tmp = File('${target.path}.jotit-tmp.$token');
+    try {
+      await tmp.writeAsBytes(payload, flush: true);
+      await tmp.rename(target.path);
+    } on Object {
+      // 失败不留下残骸：一个半截附件和截断附件一样糟。
+      if (await tmp.exists()) await tmp.delete();
+      rethrow;
+    }
 
     final linkTarget = linkTargetFor(
       notePath: normalisedNote,

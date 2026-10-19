@@ -103,6 +103,16 @@ class SyncController extends Notifier<SyncRunReport?> {
         }
 
         // Notes moved on disk; the derived index and the list have to follow.
+        //
+        // 整库 reindex 而不是对 result.touched 逐路径增量 upsert：引擎的
+        // downloadRemote / rename adopt 只写文件和 sync_meta，从不写 notes
+        // 行——同步下载 10 篇，首页一篇没有，重启才出现。增量的正确做法要
+        // 在这里重新推导改名、删除和冲突副本，而这些恰是扫描器已经处理对
+        // 的情形；扫描器的快路径按内容哈希逐文件比对，没有变化时整轮只是
+        // 一次读遍历（1000 篇约 165ms），可接受。
+        if (!result.isEmpty) {
+          await session.reindex();
+        }
         invalidateNotesFromRef(ref);
 
         final report = SyncRunReport(

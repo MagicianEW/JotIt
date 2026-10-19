@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
-
+import 'package:path/path.dart' as p;
 
 import '../../core/content_hash.dart';
 import '../../core/vault_paths.dart';
@@ -167,7 +168,11 @@ class SyncEngine {
       await dav.probe();
       machine.apply(SyncEvent.probed);
 
-      final snapshot = await _walk();
+      // Read before the walk, not after: the walk needs it to tell "the
+      // server will not talk about the synced root" apart from "the synced
+      // root is genuinely empty" (P0-4).
+      final base = await meta.allForRoot(syncRootId);
+      final snapshot = await _walk(syncRootId: syncRootId, base: base);
       if (snapshot.collectionCtag == null) {
         // A server with no CTag stays in `remoteScan` for the full walk and
         // only moves on once the listing is in hand — the §5.2 self-loop.
@@ -176,7 +181,6 @@ class SyncEngine {
       machine.apply(SyncEvent.remoteScanned);
       machine.apply(SyncEvent.localScanned);
 
-      final base = await meta.allForRoot(syncRootId);
       final localPaths = (await notes.allActive()).map((n) => n.path).toList();
       final localAttachments = await _referencedAttachmentPaths();
 
@@ -244,6 +248,16 @@ class SyncEngine {
     } on Object catch (e) {
       machine.apply(SyncEvent.networkError);
       return SyncBatchResult(error: e.toString());
+    } finally {
+      // P1-4: every round converges to idle, however it ended. The early
+      // "nothing to do" return used to leave the machine in `diffBuild` and
+      // a failure left it in `backoff`; since only `idle` accepts a
+      // trigger, the same instance could never run again — a single-flight
+      // lock that never unlocks. The backoff deadline that actually guards
+      // a retry lives in `sync_roots.next_attempt_at` (see [recordFailure]);
+      // this machine only has to stop claiming a session is in flight when
+      // none is.
+      machine.reset();
     }
   }
 
@@ -252,8 +266,17 @@ class SyncEngine {
   /// Depth is 1 per collection rather than infinity: the client refuses
   /// `Depth: infinity` because most servers answer 403, and the per-directory
   /// listing is also what the CTag-free fallback path in §6.2 describes.
-  Future<RemoteSnapshot> _walk() async {
+  ///
+  /// [base] is this root's merge-base rows, and it is what makes a 404 on the
+  /// synced root itself readable (P0-4): with a base the server has held the
+  /// subtree once, so a 404 is far more likely to be a misconfigured
+  /// baseUrl or a moved share than a deliberate deletion of everything.
+  Future<RemoteSnapshot> _walk({
+    required String syncRootId,
+    required List<SyncMetaRecord> base,
+  }) async {
     final entries = <String, RemoteEntry>{};
+    final unknownCollections = <String>{};
     String? ctag;
     var probedCtag = false;
 
@@ -265,7 +288,29 @@ class SyncEngine {
       if (!visited.add(current)) continue;
 
       final listing = await dav.listCollection(current);
-      if (listing == null) continue; // collection absent; nothing to list
+      if (listing == null) {
+        // "The listing came back 404" is not the same fact at the root and
+        // below it.
+        if (current == syncedRoot) {
+          if (base.isNotEmpty) {
+            // Reading this as "an empty collection" makes matrix row 4
+            // propagate a remote deletion for every note the vault has ever
+            // synced — one mistyped baseUrl empties the vault. Abort
+            // instead: the round fails with an error the UI can show, and
+            // nothing is deleted or uploaded.
+            throw SyncRootUnreachableException(syncRootId);
+          }
+          // Never synced: an absent root is a legitimate first round
+          // against an empty server, and the uploads below create it.
+          continue;
+        }
+        // A subfolder that will not list is *unknown*, not deleted: the
+        // server never said the folder or its contents were gone. Anything
+        // under it is left alone this round — see
+        // [RemoteSnapshot.unknownCollections].
+        unknownCollections.add(current);
+        continue;
+      }
 
       if (ctag == null) {
         probedCtag = true;
@@ -293,6 +338,7 @@ class SyncEngine {
       entries: entries,
       collectionCtag: ctag,
       probedCtag: probedCtag,
+      unknownCollections: unknownCollections,
     );
   }
 
@@ -342,6 +388,17 @@ class SyncEngine {
       ..sort();
 
     for (final path in paths) {
+      // P0-4: a folder whose listing 404'd this round leaves its whole
+      // subtree unknown. Nothing under it is uploaded, downloaded or —
+      // above all — deleted: "the server would not answer" is not "the
+      // remote deleted it". Even a brand new local note inside waits for
+      // the folder to answer again rather than racing a server that may
+      // still hold the old contents.
+      if (snapshot.isUnderUnknownCollection(path)) {
+        skipped.add(path);
+        continue;
+      }
+
       final remote = snapshot.entries[path];
       if (remote != null && remote.isCollection) continue;
 
@@ -355,7 +412,15 @@ class SyncEngine {
           syncRootId: syncRootId,
           nowMs: nowMs,
           referencedByANote: referenced.contains(path),
-          knownToVault: referenced.contains(path),
+          // P1-3: "this vault has synced this path before" is what the base
+          // row records — not "a note currently references it". A deleted
+          // attachment's `sync_meta` row survives (§4.4: the index row
+          // outlives the file), and that row is the only thing that tells
+          // "another device just sent me this picture" (download) apart
+          // from "I had this picture and it is gone" (propagate the
+          // deletion). Deriving it from the references instead resurrected
+          // a deleted attachment from the server on every single round.
+          knownToVault: record != null,
         );
         switch (outcome) {
           case _Outcome.downloaded:
@@ -491,9 +556,27 @@ class SyncEngine {
     // never the judgement, only a way to avoid re-reading bytes we already
     // know). Skipped entirely when the file is absent locally, because the
     // download case is going to fetch the bytes regardless.
-    final remoteHash = (remote != null && localExists)
-        ? await _remoteAttachmentHash(remote, record, localBytes: bytes)
-        : null;
+    //
+    // P1-7: the pre-filter GET carries the length the PROPFIND already
+    // reported, so a large attachment gets the scaled timeout instead of the
+    // 30-second default — and a transfer that dies on the way is handled as
+    // the attachment failure it is (recorded, retried next round) rather
+    // than as an exception that escapes the whole round.
+    String? remoteHash;
+    if (remote != null && localExists) {
+      try {
+        remoteHash =
+            await _remoteAttachmentHash(remote, record, localBytes: bytes);
+      } on DavException catch (e) {
+        await meta.notePreconditionFailed(
+          syncRootId: syncRootId,
+          path: path,
+          error: '校验中断：${e.reason}',
+          at: nowMs,
+        );
+        return _Outcome.retryNextRound;
+      }
+    }
 
     final decision = classifyAttachment(AttachmentObservation(
       path: path,
@@ -676,7 +759,12 @@ class SyncEngine {
     required DavCondition condition,
   }) async {
     final file = files.fileFor(path);
-    if (file == null) {
+    // P1-9: the file can vanish between classification and transfer — the
+    // user deletes the picture while the round is running. `length()` then
+    // throws a FileSystemException, which is not a DavException and so
+    // escaped the whole round. Checking first turns it into the same
+    // "nothing was sent" answer the null-file case already gives.
+    if (file == null || !await file.exists()) {
       return const _StreamedPut(DavPutResult(statusCode: 404, etag: null), null, 0);
     }
 
@@ -738,6 +826,12 @@ class SyncEngine {
     // The checksum of the bytes that actually went over the wire. The fallback
     // is only for the case where the digest never finished, and it is the
     // hash taken from the file's own bytes a moment earlier — not a guess.
+    //
+    // A 404 is not the server answering: it is the local short-circuit for
+    // "the file was gone before anything was sent" (see [_streamAttachment]).
+    // Committing a base for bytes the server has never seen is how an
+    // attachment reports itself synced while the other device has nothing.
+    if (streamed.put.statusCode == 404) return _Outcome.skipped;
     final sha256 = streamed.sha256 ?? fallbackHash;
     if (sha256 == null) return _Outcome.skipped;
 
@@ -780,7 +874,12 @@ class SyncEngine {
       // not moved, so the recorded checksum is still true.
       return baseHash;
     }
-    final bytes = await dav.get(remote.path);
+    // The size hint comes from the same PROPFIND that produced [remote], so
+    // the wait scales with the body for free — without it a large
+    // attachment hits the 30-second default and is reported as a failed
+    // round on a perfectly good connection.
+    final bytes =
+        await dav.get(remote.path, expectedLength: remote.contentLength);
     return bytes == null ? null : ContentHash.ofBytes(bytes);
   }
 
@@ -823,10 +922,13 @@ class SyncEngine {
         baseContentHash: ContentHash.ofBytes(bytes),
         at: nowMs,
       );
-    } else if (put.statusCode != 412) {
-      // 412: someone already has a file at the new path. Left alone and
-      // reported through the same channel as any other refused precondition —
-      // it is a fact about the vault, not something to resolve by force.
+    } else {
+      // P1-2: 412 means something already owns the new path — the create
+      // did not happen. Falling through to the delete below used to destroy
+      // the old copy anyway, and that old copy was the *only* remote copy of
+      // the attachment: the move left the user with nothing on the server
+      // and a broken image on every device. Report the refusal and stop;
+      // the old copy stays exactly where it is.
       await meta.notePreconditionFailed(
         syncRootId: syncRootId,
         path: newPath,
@@ -836,12 +938,18 @@ class SyncEngine {
       return;
     }
 
-    // The new copy is in place either way, so the old one is now redundant.
+    // The new copy is in place, so the old one is now redundant.
     // A delete that fails leaves litter rather than loss, and the next round
     // sees the old path with no local file and no note pointing at it.
+    //
+    // The old base row is deliberately **kept**: this round's snapshot was
+    // taken before the delete, so the path is still in the walk, and
+    // `sync_meta` holding a row for it is what makes the classifier read
+    // "this vault had the file and it is gone" (propagate the deletion)
+    // instead of "this device has never seen it" (download it back).
+    // Removing the row here resurrected the attachment one round later.
     try {
       await dav.delete(oldPath);
-      await meta.remove(syncRootId, oldPath);
     } on DavException {
       // Already gone counts as success inside `DavClient.delete`.
     }
@@ -906,6 +1014,27 @@ class SyncEngine {
         .firstOrNull;
   }
 
+  /// An existing `_conflicts/` directory for a conflict that is still waiting
+  /// on a person, or null when there is none.
+  ///
+  /// Consulted before writing copies so that a conflict which stays open
+  /// across rounds does not accumulate one copy set per round. Both records
+  /// are checked because a rename moves the base row: the pending conflict
+  /// may be recorded against the path the note is leaving.
+  Future<String?> _pendingConflictDir(
+    SyncMetaRecord? primary,
+    SyncMetaRecord? secondary,
+  ) async {
+    for (final record in [primary, secondary]) {
+      if (record == null) continue;
+      if (!record.conflictState.isUnresolved) continue;
+      final dir = record.conflictCopyDir;
+      if (dir == null) continue;
+      if (await Directory(p.join(conflictsRoot, dir)).exists()) return dir;
+    }
+    return null;
+  }
+
   Future<_Outcome> _carryOut({
     required SyncDecision decision,
     required SyncObservation observation,
@@ -920,28 +1049,36 @@ class SyncEngine {
     // Copies first. Every conflict branch in here writes to `_conflicts/`
     // before a single byte of the user's file or the remote's changes.
     if (decision.preserveLocal || decision.preserveRemote) {
-      final remoteBytes = decision.preserveRemote ? await dav.get(path) : null;
-      final written = await ConflictWriter.write(
-        vaultRoot: vaultRoot,
-        originalPath: path,
-        localBytes: decision.preserveLocal ? localBytes : null,
-        remoteBytes: remoteBytes,
-        sources: ConflictSources(
-          localUid: record?.uid,
-          localHash: localBytes == null ? null : ContentHash.ofBytes(localBytes),
-          remoteEtag: remote?.etag,
-          remoteHash: remoteBytes == null ? null : ContentHash.ofBytes(remoteBytes),
-        ),
-        when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
-        at: nowMs,
-      );
-      await meta.markConflict(
-        syncRootId: syncRootId,
-        path: path,
-        state: ConflictState.pendingResolution,
-        copyDir: written.directory,
-        at: nowMs,
-      );
+      // A conflict that is already waiting on a person does not earn a
+      // second copy directory every round: the copies are on disk and the
+      // base row says where. Reusing them keeps `_conflicts/` from growing
+      // by one set of files per sync while the dialog sits unanswered —
+      // and the path is still reported through the action switch below.
+      final existingDir = await _pendingConflictDir(record, null);
+      if (existingDir == null) {
+        final remoteBytes = decision.preserveRemote ? await dav.get(path) : null;
+        final written = await ConflictWriter.write(
+          vaultRoot: vaultRoot,
+          originalPath: path,
+          localBytes: decision.preserveLocal ? localBytes : null,
+          remoteBytes: remoteBytes,
+          sources: ConflictSources(
+            localUid: record?.uid,
+            localHash: localBytes == null ? null : ContentHash.ofBytes(localBytes),
+            remoteEtag: remote?.etag,
+            remoteHash: remoteBytes == null ? null : ContentHash.ofBytes(remoteBytes),
+          ),
+          when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+          at: nowMs,
+        );
+        await meta.markConflict(
+          syncRootId: syncRootId,
+          path: path,
+          state: ConflictState.pendingResolution,
+          copyDir: written.directory,
+          at: nowMs,
+        );
+      }
     }
 
     switch (decision.action) {
@@ -950,55 +1087,171 @@ class SyncEngine {
         return _Outcome.skipped;
 
       case SyncAction.remoteRenameAdopt:
-        // The other device moved the file; the uid proves it is the same
-        // note. Move the local file too, or the vault ends up holding one
-        // note twice under two paths — and the next round cannot tell which
-        // is which.
+        // P0-1: the remote bytes are pulled down **before** anything moves
+        // and before the base is committed. The old code renamed the local
+        // file and committed a base built from the remote's ETag plus the
+        // *local* hash, having never fetched the body — so a device that
+        // had never seen the remote edit believed it was in sync while
+        // sitting on stale content, and its next upload silently
+        // overwrote the other device's edit with that stale content.
+        //
+        // C3 decides what happens to the local side: bytes both sides last
+        // agreed on (the base) may be replaced without comment, but any
+        // local edit that cannot be accounted for is copied to
+        // `_conflicts/` first — the same trade `deleteVsModifyPreserveLocal`
+        // makes. The rename itself is still not a conflict (the uid proves
+        // it is the same note), so the remote content is adopted either way
+        // and only the unaccounted-for edit is escalated to a person.
+        final remoteBytes = await dav.get(path);
+        if (remoteBytes == null) return _Outcome.skipped;
+        final remoteHash = ContentHash.ofBytes(remoteBytes);
+
+        String? conflictDir;
+        var localBytesPreserved = false;
+
         if (knownBasePath != null && knownBasePath != path) {
           final from = files.fileFor(knownBasePath);
           final to = files.fileFor(path);
-          if (from != null && to != null && await from.exists()) {
-            await to.parent.create(recursive: true);
-            if (await to.exists()) await to.delete();
-            await from.rename(to.path);
+          final oldRecord = await meta.byPath(syncRootId, knownBasePath);
+
+          // A missing File handle and a missing file are the same "not
+          // there" to every branch below, so the existence check and the
+          // null check are folded into one nullable File.
+          final File? fromHere =
+              from != null && await from.exists() ? from : null;
+          final File? toHere = to != null && await to.exists() ? to : null;
+
+          // Which local file is "the note"? The one at the path the base
+          // was recorded against if it is still there; otherwise the copy
+          // already sitting at the target.
+          final List<int>? localBytes = fromHere != null
+              ? await fromHere.readAsBytes()
+              : (toHere != null ? await toHere.readAsBytes() : null);
+
+          // "Unsynced" means the local bytes are not the state both sides
+          // last agreed on. A missing base row counts as unsynced too:
+          // without a recorded merge base nothing about the local bytes can
+          // be proven, and C3 does not gamble on unprovable state.
+          if (localBytes != null &&
+              (oldRecord == null ||
+                  oldRecord.baseContentHash == null ||
+                  ContentHash.ofBytes(localBytes) != oldRecord.baseContentHash)) {
+            localBytesPreserved = true;
+            conflictDir ??= await _pendingConflictDir(record, oldRecord);
+            conflictDir ??= (await ConflictWriter.write(
+              vaultRoot: vaultRoot,
+              originalPath: knownBasePath,
+              localBytes: localBytes,
+              remoteBytes: null,
+              sources: ConflictSources(
+                localUid: oldRecord?.uid ?? observation.localUid,
+                localHash: ContentHash.ofBytes(localBytes),
+                remoteEtag: remote?.etag,
+                remoteHash: remoteHash,
+                remoteUid: observation.remoteUid,
+              ),
+              when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+              at: nowMs,
+            ))
+                .directory;
+          }
+
+          // P0-3 (engine side): the rename below destroys whatever already
+          // sits at the target path. The matrix now keeps a target holding
+          // a *different* identity out of this branch entirely, so what can
+          // reach here is a stale copy of the same note — but its bytes are
+          // still not ours to drop, and the unconditional `to.delete()`
+          // that used to sit here destroyed an unsynced local note without
+          // a trace.
+          if (toHere != null) {
+            final doomed = await toHere.readAsBytes();
+            localBytesPreserved = true;
+            conflictDir ??= await _pendingConflictDir(record, null);
+            conflictDir ??= (await ConflictWriter.write(
+              vaultRoot: vaultRoot,
+              originalPath: path,
+              localBytes: doomed,
+              remoteBytes: null,
+              sources: ConflictSources(
+                localUid: observation.remoteUid ?? observation.localUid,
+                localHash: ContentHash.ofBytes(doomed),
+                remoteEtag: remote?.etag,
+                remoteHash: remoteHash,
+                remoteUid: observation.remoteUid,
+              ),
+              when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+              at: nowMs,
+            ))
+                .directory;
+          }
+
+          if (to != null) await to.parent.create(recursive: true);
+          if (toHere != null) await toHere.delete();
+          if (fromHere != null && to != null) {
+            await fromHere.rename(to.path);
             await meta.remove(syncRootId, knownBasePath);
-            // §9.3 rule 4. Renaming the file alone leaves this device with a
-            // note whose link points at an `attachments/` folder that stayed
-            // behind — a note that reads perfectly and shows a broken image,
-            // with nothing anywhere reporting a problem. Doing it after the
-            // file moves rather than before is deliberate: the move is what
-            // creates the situation.
-            final carried = await mover.moveAttachments(
-              fromNotePath: knownBasePath,
-              toNotePath: path,
+            // The index row follows the file. Leaving a live row at the old
+            // path points the vault at a note that is no longer there, and
+            // the next reindex would resurrect it as a new one.
+            await notes.softDelete(knownBasePath, at: nowMs);
+          }
+          // §9.3 rule 4. Renaming the file alone leaves this device with a
+          // note whose link points at an `attachments/` folder that stayed
+          // behind — a note that reads perfectly and shows a broken image,
+          // with nothing anywhere reporting a problem. Doing it after the
+          // file moves rather than before is deliberate: the move is what
+          // creates the situation.
+          final carried = await mover.moveAttachments(
+            fromNotePath: knownBasePath,
+            toNotePath: path,
+          );
+          // And finish the move on the server, in the same round. Leaving
+          // the upload to "the next round" would mean the path set — which
+          // is fixed before the rename happens — never contained the new
+          // path, so a single click of 立即同步 would move the picture
+          // locally and leave the other device still showing a broken one.
+          for (final entry in carried.relocations.entries) {
+            await _relocateAttachment(
+              oldPath: entry.key,
+              newPath: entry.value,
+              syncRootId: syncRootId,
+              nowMs: nowMs,
             );
-            // And finish the move on the server, in the same round. Leaving
-            // the upload to "the next round" would mean the path set — which
-            // is fixed before the rename happens — never contained the new
-            // path, so a single click of 立即同步 would move the picture
-            // locally and leave the other device still showing a broken one.
-            for (final entry in carried.relocations.entries) {
-              await _relocateAttachment(
-                oldPath: entry.key,
-                newPath: entry.value,
-                syncRootId: syncRootId,
-                nowMs: nowMs,
-              );
-            }
           }
         }
+
         // The identity comes from the *remote* copy. Taking the local base
         // row's uid instead writes null, and the following round then sees a
         // delete plus an unrelated new file rather than a rename.
+        //
+        // The base records the hash of the bytes actually written below:
+        // committing any other hash is what made the next round disagree
+        // with the disk and re-transfer a note that was already in sync.
+        await files.writeAtomic(path, remoteBytes);
         await meta.commitBase(
           syncRootId: syncRootId,
           path: path,
           uid: observation.remoteUid ?? observation.localUid,
           baseEtag: remote?.etag,
-          baseContentHash: record?.baseContentHash,
+          baseContentHash: remoteHash,
           at: nowMs,
         );
-        return _Outcome.downloaded;
+        if (localBytesPreserved && conflictDir != null) {
+          // After [commitBase], not before: commitBase rewrites the row and
+          // resets `conflict_state`, which would erase the very flag the
+          // Settings page reads.
+          await meta.markConflict(
+            syncRootId: syncRootId,
+            path: path,
+            state: ConflictState.pendingResolution,
+            copyDir: conflictDir,
+            at: nowMs,
+          );
+        }
+        // A preserved local edit is reported as a conflict: the vault has
+        // converged on the remote content, but a person still has bytes to
+        // recover from `_conflicts/`.
+        return localBytesPreserved ? _Outcome.conflicted : _Outcome.downloaded;
 
       case SyncAction.downloadRemote:
         final bytes = await dav.get(path);
@@ -1233,6 +1486,26 @@ Future<String?> _etagAfterWrite(String path) async {
 
   /// Directory the engine considers local-only.
   String get conflictsRoot => VaultPaths.conflictsRoot(vaultRoot);
+}
+
+/// The synced root itself answered 404 while `sync_meta` still holds a merge
+/// base for it (P0-4).
+///
+/// Reading that 404 as "an empty collection" makes matrix row 4 propagate a
+/// remote deletion for every note the vault has ever synced — one tap on
+/// 立即同步 with a mistyped baseUrl empties the vault. This is thrown
+/// instead, so [SyncEngine.run] returns a result carrying an error and the UI
+/// can say the remote state is unknown and the round was aborted. Nothing is
+/// deleted and nothing is uploaded.
+class SyncRootUnreachableException implements Exception {
+  const SyncRootUnreachableException(this.syncRootId);
+
+  final String syncRootId;
+
+  @override
+  String toString() =>
+      '远端状态不明，已中止：同步根返回 404，但本地存在已同步记录'
+      '（root $syncRootId）。请检查 baseUrl 与服务器状态后重试；本轮未做任何改动。';
 }
 
 /// A streamed `PUT` and the checksum of what actually went over the wire.

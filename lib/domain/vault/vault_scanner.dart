@@ -257,7 +257,11 @@ class VaultScanner {
       );
       if (note.uid == null) {
         final uid = _uuid.v4();
-        final rewritten = await _files.ensureUid(path, uid);
+        // 回填持有该路径的写锁：它和一次保存是同形状的读-改-写序列，
+        // 交错会让保存凭"没看到 uid"的旧读点铸出新 uid，身份静默漂移
+        // （ADR-2）。锁的粒度是单路径，不会让整库扫描串行化。
+        final rewritten =
+            await _files.exclusive(path, () => _files.ensureUid(path, uid));
         if (rewritten != null) {
           backfilled.add(path);
           bytes = rewritten;

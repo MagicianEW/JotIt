@@ -90,6 +90,26 @@ void main() {
       expect(d.preserveLocal, isTrue);
       expect(d.preserveRemote, isTrue);
     });
+
+    test('local file with no uid is a conflict, never an overwrite', () {
+      // The mirror of the above: a local file whose identity cannot be read
+      // used to fall through to the rows below, where it was either
+      // uploaded over the remote note or downloaded over.
+      final d = classifySync(obs(
+        localExists: true,
+        localUid: null,
+        localContentHash: h,
+        remoteExists: true,
+        remoteUid: uidA,
+        remoteEtag: 'e1',
+        remoteContentHash: other,
+        baseEtag: 'e0',
+        baseContentHash: 'base',
+      ));
+      expect(d.action, SyncAction.trueConflict);
+      expect(d.preserveLocal, isTrue);
+      expect(d.preserveRemote, isTrue);
+    });
   });
 
   group('row 3 — remote rename', () {
@@ -116,6 +136,54 @@ void main() {
         baseContentHash: 'base',
       ));
       expect(d.action, isNot(SyncAction.remoteRenameAdopt));
+    });
+
+    test('a target path holding a different uid is not a rename', () {
+      // P0-3: adopting would destroy the local file at the target path.
+      // This is a path collision that merely looks like a rename.
+      final d = classifySync(obs(
+        localExists: true,
+        localUid: uidB,
+        localContentHash: h,
+        remoteExists: true,
+        remoteUid: uidA,
+        remoteEtag: 'e1',
+        knownBasePathForRemoteUid: 'projects/old.md',
+      ));
+      expect(d.action, SyncAction.pathCollision);
+      expect(d.preserveLocal, isTrue);
+      expect(d.preserveRemote, isTrue);
+    });
+
+    test('a target path holding a uidless file is not a rename', () {
+      // C3: the local identity cannot be read, so nothing is overwritten.
+      final d = classifySync(obs(
+        localExists: true,
+        localUid: null,
+        localContentHash: h,
+        remoteExists: true,
+        remoteUid: uidA,
+        remoteEtag: 'e1',
+        knownBasePathForRemoteUid: 'projects/old.md',
+      ));
+      expect(d.action, SyncAction.trueConflict);
+      expect(d.preserveLocal, isTrue);
+      expect(d.preserveRemote, isTrue);
+    });
+
+    test('a target path already holding the same uid is still a rename', () {
+      // The note was moved locally but the base was not updated; adopting
+      // the remote path is still the right answer.
+      final d = classifySync(obs(
+        localExists: true,
+        localUid: uidA,
+        localContentHash: h,
+        remoteExists: true,
+        remoteUid: uidA,
+        remoteEtag: 'e1',
+        knownBasePathForRemoteUid: 'projects/old.md',
+      ));
+      expect(d.action, SyncAction.remoteRenameAdopt);
     });
   });
 

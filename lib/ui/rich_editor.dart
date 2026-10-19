@@ -22,43 +22,124 @@ class RichEditorPane extends StatefulWidget {
     super.key,
     required this.body,
     required this.onChanged,
+    this.onEditStarted,
   });
 
   final String body;
   final void Function(String markdown) onChanged;
+
+  /// Fired the instant the document changes, before [onChanged]'s debounce
+  /// decides what the text is.
+  ///
+  /// The editor page needs it for its unsaved-changes guards (the leave
+  /// dialog, the back gesture): an edit still inside the 250 ms debounce is
+  /// invisible to them, and leaving would then happen without asking about
+  /// text the user typed half a second ago.
+  final VoidCallback? onEditStarted;
 
   @override
   State<RichEditorPane> createState() => RichEditorPaneState();
 }
 
 class RichEditorPaneState extends State<RichEditorPane> {
-  late final MutableDocument _doc;
-  late final Editor _editor;
+  // Not final: an external change to [RichEditorPane.body] (an attachment
+  // spliced into the buffer, a jump to another note) reloads both from
+  // scratch — see [didUpdateWidget]. `SuperEditor` is built to take a swapped
+  // `Editor`; its own `didUpdateWidget` re-wires the composer and layout.
+  late MutableDocument _doc;
+  late Editor _editor;
   Timer? _debounce;
+
+  /// The `widget.body` value the document is currently in sync with. Compared
+  /// by value, never by reference: the parent rebuilds the body string on
+  /// every frame, so identity would report a change that never happened.
+  String _knownBody = '';
 
   @override
   void initState() {
     super.initState();
-    _doc = deserializeNoteBody(widget.body);
-    _editor = createDefaultDocumentEditor(document: _doc);
+    _loadDocument(widget.body);
     // Serialising on every keystroke is wasteful; a short debounce keeps the
     // buffer fresh for saving while letting rapid typing stay cheap.
+    _doc.addListener(_onDocumentChanged);
+  }
+
+  /// Rebuilds the document — and the editor over it — from [body].
+  void _loadDocument(String body) {
+    _doc = deserializeNoteBody(body);
+    _editor = createDefaultDocumentEditor(document: _doc);
+    _knownBody = body;
+  }
+
+  @override
+  void didUpdateWidget(covariant RichEditorPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.body == _knownBody) return;
+
+    // "A different string" is not by itself an external edit: the parent hands
+    // the pane a body derived from the shared text buffer on every rebuild,
+    // and this pane's own debounced serialisation loops back through that
+    // buffer — treating it as external would reload the document under the
+    // user's caret on every pause in typing. Compare the *serialised
+    // document* against the incoming body instead: equal means the change
+    // originated here and the document already agrees with the buffer.
+    //
+    // The comparison trims because the stitching is not byte-exact: the parent
+    // re-attaches the front matter with a blank line, so the body that comes
+    // back carries an extra leading newline around the very same text.
+    if (widget.body.trim() == serializeNoteBody(_doc).trim()) {
+      _knownBody = widget.body;
+      return;
+    }
+
+    // A genuinely external edit: reload. Anything still on the debounce
+    // describes a document the user can no longer see, so it is dropped —
+    // the editor page flushes before it mutates the buffer, so nothing the
+    // user typed is lost in the process.
+    _debounce?.cancel();
+    _doc.removeListener(_onDocumentChanged);
+    _loadDocument(widget.body);
     _doc.addListener(_onDocumentChanged);
   }
 
   @override
   void dispose() {
     _doc.removeListener(_onDocumentChanged);
+    // Deliberately no flush here. A pending serialisation is delivered by the
+    // editor page *before* it removes the pane (view switch, save, jump —
+    // see [EditorPage]); reaching back into the parent's state from a
+    // dispose that can run mid-teardown is the setState-after-dispose class
+    // of bug this codebase avoids. The one removal the parent cannot pre-empt
+    // — leaving the page — is covered by PopScope, which learns about the
+    // edit through [RichEditorPane.onEditStarted] and asks before discarding.
     _debounce?.cancel();
     super.dispose();
   }
 
   void _onDocumentChanged(DocumentChangeLog changeLog) {
+    // Mark the note dirty before the debounce: the guards that ask "are there
+    // unsaved changes?" must not wait 250 ms to learn the answer.
+    widget.onEditStarted?.call();
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), () {
       if (!mounted) return;
       widget.onChanged(serializeNoteBody(_doc));
     });
+  }
+
+  /// True while a serialisation is still waiting on the debounce.
+  bool get hasPendingChange => _debounce?.isActive ?? false;
+
+  /// Delivers a pending serialisation now instead of on the debounce.
+  ///
+  /// The editor page calls this before it tears the pane down or writes the
+  /// buffer: without it, an edit made in the last 250 ms before a view switch
+  /// was cancelled with the timer and silently lost.
+  void flush() {
+    final pending = _debounce?.isActive ?? false;
+    _debounce?.cancel();
+    _debounce = null;
+    if (pending) widget.onChanged(serializeNoteBody(_doc));
   }
 
   // ------------------------------------------------------------- formatting

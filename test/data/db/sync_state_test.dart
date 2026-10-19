@@ -154,6 +154,48 @@ void main() {
       expect(open.every((r) => r.conflictState.isUnresolved), isTrue);
     });
 
+    test('markConflict records a conflict even with no base row', () async {
+      // P1-4a: 纯 UPDATE 对从未同步过的路径影响 0 行 —— 冲突副本落了盘、
+      // DB 无记录，Settings 的"需要关注"永远看不到这个冲突。
+      await store.markConflict(
+        syncRootId: root,
+        path: 'notes/never-synced.md',
+        state: ConflictState.conflict,
+        copyDir: '_conflicts/20261007-101500-1-never',
+        at: 42,
+      );
+
+      final got = await store.byPath(root, 'notes/never-synced.md');
+      expect(got, isNotNull);
+      expect(got!.conflictState, ConflictState.conflict);
+      expect(got.conflictCopyDir, '_conflicts/20261007-101500-1-never');
+      expect(got.lastSyncedAt, 42);
+      expect((await store.unresolved(root)).single.path,
+          'notes/never-synced.md');
+    });
+
+    test('markConflict updates an existing row without touching the base',
+        () async {
+      await store.upsert(await seed('notes/a.md',
+          uid: 'u1', etag: '"e"', hash: 'h'));
+      await store.markConflict(
+        syncRootId: root,
+        path: 'notes/a.md',
+        state: ConflictState.pendingResolution,
+        copyDir: 'd1',
+        at: 7,
+      );
+
+      final got = await store.byPath(root, 'notes/a.md');
+      expect(got!.conflictState, ConflictState.pendingResolution);
+      expect(got.conflictCopyDir, 'd1');
+      expect(got.lastSyncedAt, 7);
+      expect(got.uid, 'u1',
+          reason: 'the conflict write must not rewrite the note identity');
+      expect(got.baseEtag, '"e"');
+      expect(got.baseContentHash, 'h');
+    });
+
     test('an unknown conflict_state string degrades to none', () async {
       // A row written by a newer build must not crash an older one.
       expect(ConflictState.parse('something_new'), ConflictState.none);

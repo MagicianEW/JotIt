@@ -87,16 +87,22 @@ class VaultSession {
     String vaultRoot, {
     Directory? appDataDir,
     ScreenSecurity? screenSecurity,
+    NoteFileStore? files,
   }) async {
     await NoteFileStore.ensureLayout(vaultRoot);
+    // 启动恢复先于首次 reindex：上次写入中途被杀会留下
+    // `.jotit-tmp.*`（未提交，删）与 `.jotit-bak.*`（唯一副本，搬回）。
+    // 索引必须从恢复之后的文件状态建立，否则一篇笔记会带着旧路径的
+    // 幽灵行出现，或者干脆消失。
+    await NoteFileStore.recoverInterruptedWrites(vaultRoot);
     final database = await JotItDatabase.open(
       filePath: p.join(VaultPaths.appRoot(vaultRoot), 'jotit.db'),
     );
-    final files = NoteFileStore(vaultRoot: vaultRoot);
+    final fileStore = files ?? NoteFileStore(vaultRoot: vaultRoot);
     final session = VaultSession._(
       vaultRoot: vaultRoot,
       database: database,
-      files: files,
+      files: fileStore,
       notes: NoteDao(database.db),
       search: NoteSearch(database.db),
       meta: SyncMetaStore(database.db),
@@ -222,16 +228,39 @@ class VaultSession {
   /// backup. After this call the backup always holds the *previous* save —
   /// one file, always the version before the one being written now. The
   /// `.jotit` tree is local-only, so backups never sync.
-  Future<void> backupBeforeRichSave(String notePath) async {
-    final bytes = await files.readBytesIfPresent(notePath);
-    if (bytes == null) return; // nothing on disk yet — nothing to keep
+  ///
+  /// Returns a warning for the UI to surface separately when the backup could
+  /// not be written, or null when it succeeded (or there was nothing on disk
+  /// to keep). **Never throws:** a failed backup must not abort the save it
+  /// precedes — the user's edit lives only in memory until that save lands,
+  /// so losing the save to protect a convenience copy is the worse trade.
+  /// The write itself is atomic (tmp + rename) for the same reason note
+  /// writes are: a half-written backup looks like a recovery point and is not.
+  Future<String?> backupBeforeRichSave(String notePath) async {
+    List<int> bytes;
+    try {
+      final read = await files.readBytesIfPresent(notePath);
+      if (read == null) return null; // nothing on disk yet — nothing to keep
+      bytes = read;
+    } on Object catch (e) {
+      return '备份上一版本失败（读不到原文件）：$e';
+    }
 
     final rel = VaultPaths.stripNotesPrefix(notePath) ?? notePath;
     final bak = File(p.join(VaultPaths.appRoot(vaultRoot), 'backups',
         '$rel.bak'));
-    await bak.parent.create(recursive: true);
-    await bak.writeAsBytes(bytes, flush: true);
+    try {
+      await files.writeFileAtomic(bak, bytes);
+      return null;
+    } on Object catch (e) {
+      return '备份上一版本失败：$e';
+    }
   }
+
+  /// Set by [saveRich] when [backupBeforeRichSave] could not write the backup.
+  /// The save still happens; the UI surfaces this separately so a failed
+  /// backup is neither silent nor mistaken for a failed save.
+  String? lastBackupWarning;
 
   /// A rich-text save: back up the current file first, then write. The
   /// serialiser normalises formatting (the agreed waiver), so this is the
@@ -242,7 +271,7 @@ class VaultSession {
   /// the last real save.
   Future<String?> saveRich(String notePath, String text) async {
     if (await _composedSaveText(notePath, text) == null) return null;
-    await backupBeforeRichSave(notePath);
+    lastBackupWarning = await backupBeforeRichSave(notePath);
     return save(notePath, text);
   }
 
@@ -252,17 +281,27 @@ class VaultSession {
   /// sync engine reads that hash as "the user edited this note", so a save
   /// that produces the same file must not look like an edit.
   Future<String?> save(String notePath, String text) async {
-    final composed = await _composedSaveText(notePath, text);
-    if (composed == null) return null;
-    final before = await files.readBytesIfPresent(notePath);
+    // 整个读-改-写序列持有该路径的写锁：与扫描器的 uid 回填互斥，否则
+    // 回填铸出的 uid 会被保存凭旧读点写出的无 uid 文本覆盖、再由
+    // ensureUid 铸一个新 uid —— 身份静默漂移（ADR-2）。reindex 放在锁外：
+    // 它会为其它路径取锁，嵌套取锁可能成环死锁。
+    final written = await files.exclusive(notePath, () async {
+      final composed = await _composedSaveText(notePath, text);
+      if (composed == null) return false;
+      final before = await files.readBytesIfPresent(notePath);
 
-    final bytes = before == null
-        ? utf8.encode(composed)
-        : await files.encodeLike(originalBytes: before, text: composed);
-    await files.writeAtomic(notePath, bytes);
-    // ADR-2: identity lives in the file, so a note the user created here must
-    // carry one before it is ever offered to the sync engine.
-    await files.ensureUid(notePath, _uuid.v4());
+      final bytes = before == null
+          ? utf8.encode(composed)
+          : await files.encodeLike(originalBytes: before, text: composed);
+      await files.writeAtomic(notePath, bytes);
+      // ADR-2: identity lives in the file, so a note the user created here must
+      // carry one before it is ever offered to the sync engine. ensureUid 只
+      // 在没有 uid 时补写；并发回填已写过的 uid 会被它原样尊重。
+      await files.ensureUid(notePath, _uuid.v4());
+      return true;
+    });
+    if (!written) return null;
+
     await reindex();
 
     final after = await files.readBytesIfPresent(notePath);
@@ -272,9 +311,18 @@ class VaultSession {
   /// Composes the text a save would write — inheriting the file's existing
   /// uid when the incoming text lacks one — and returns null when writing it
   /// would change nothing (a no-op save).
+  ///
+  /// Throws [StateError] when the file on disk is not valid UTF-8. Letting
+  /// that case through would send [NoteFileStore.encodeLike]'s
+  /// `allowMalformed: true` to work, which replaces every undecodable byte
+  /// with U+FFFD and syncs the damage to every device — the same refusal
+  /// [readForEdit] already applies on the read side.
   Future<String?> _composedSaveText(String notePath, String text) async {
     final before = await files.readBytesIfPresent(notePath);
-    if (before == null || !NoteFileStore.isValidUtf8(before)) return text;
+    if (before == null) return text;
+    if (!NoteFileStore.isValidUtf8(before)) {
+      throw StateError('文件不是 UTF-8，拒绝保存以免损坏原文件');
+    }
 
     final stripped = before.length >= 3 &&
             before[0] == 0xEF &&
@@ -296,19 +344,45 @@ class VaultSession {
   }
 
   /// Creates a new note and returns its `notes/`-prefixed path.
+  ///
+  /// 同名不覆盖：目标已存在时自动找 `name-1.md`、`name-2.md`… 第一个空闲名。
+  /// 直接覆盖会把旧内容换成 `# name` 存根，且没有任何恢复途径 —— 那是一次
+  /// 静默的数据丢失。选取在路径写锁内完成，两个并发的同名创建不会选中同一个
+  /// 空闲名。
   Future<String> createNote({String? title, String? directory}) async {
     final raw = (title ?? '').trim();
     final name = _safeFileName(raw.isEmpty ? 'untitled' : raw);
     final dir = (directory ?? '').trim();
-    final notePath = dir.isEmpty
-        ? '${VaultPaths.notesDirName}/$name.md'
-        : '${VaultPaths.notesDirName}/$dir/$name.md';
+    final prefix = dir.isEmpty
+        ? '${VaultPaths.notesDirName}/'
+        : '${VaultPaths.notesDirName}/$dir/';
 
-    await files.writeAtomic(notePath, utf8.encode('# $name\n\n'));
-    await files.ensureUid(notePath, _uuid.v4());
-    await reindex();
-    return notePath;
+    for (var attempt = 0;; attempt++) {
+      final notePath = attempt == 0
+          ? '$prefix$name.md'
+          : '$prefix$name-$attempt.md';
+      // 在锁内"检查是否存在并落盘"：检查和 claim 之间没有让出点，并发
+      // 的同名创建会串行地看到彼此写下的文件。
+      final claimed = await files.exclusive(notePath, () async {
+        final existing = files.fileFor(notePath);
+        if (existing != null && await existing.exists()) return false;
+        await files.writeAtomic(notePath, utf8.encode('# $name\n\n'));
+        await files.ensureUid(notePath, _uuid.v4());
+        return true;
+      });
+      if (claimed) {
+        await reindex();
+        return notePath;
+      }
+      if (attempt >= _maxNameAttempts) {
+        throw StateError('找不到可用的笔记文件名：$name');
+      }
+    }
   }
+
+  /// Ceiling on the `name-N.md` search. A vault with ten thousand same-named
+  /// notes has a different problem; refusing loudly beats spinning forever.
+  static const int _maxNameAttempts = 10000;
 
   /// Creates a note without touching the index — for fixtures and for the
   /// "what the other device did" tests.

@@ -111,21 +111,28 @@ class NoteDao {
 
   /// Inserts or updates a note, replacing a stale row that occupied the same
   /// path under a different uid.
+  ///
+  /// 清理是对称的，两个方向都要处理，因为"身份"和"路径"各有一个唯一约束：
+  ///
+  ///  * 同 path 不同 uid —— 身份被换掉的旧行（先删，避免 UNIQUE(path) 打架）；
+  ///  * 同 uid 不同 path —— 笔记被挪走了（另一设备改名后本机同步采纳，
+  ///    或用户在文件管理器里移动）。这一方向更重要：索引里已有
+  ///    `id=U, path=old.md`、文件已到 new.md 时，`INSERT OR IGNORE` 会因
+  ///    主键冲突整行跳过，随后的 `UPDATE ... WHERE path = new.md` 影响 0 行
+  ///    —— 新路径永远插不进去，旧行永存，而 purge 没有调用方，笔记就此在
+  ///    应用内永久消失（重启也不会好，因为文件确实在，索引却指着旧路径）。
   Future<void> upsert(NoteRecord record) async {
     Future<void> body(DatabaseExecutor txn) async {
       // A note whose uid changed while keeping its path is a rename of
       // identity, not a new note. Drop the stale row first so the unique path
       // constraint does not fight the new one.
-      final existing = await txn.query(
-        'notes',
-        columns: ['id'],
-        where: 'path = ?',
-        whereArgs: [record.path],
-        limit: 1,
-      );
-      if (existing.isNotEmpty && existing.first['id'] != record.uid) {
-        await txn.delete('notes', where: 'path = ?', whereArgs: [record.path]);
-      }
+      await txn.delete('notes',
+          where: 'path = ? AND id != ?', whereArgs: [record.path, record.uid]);
+
+      // The mirror image: the same note (same uid) living at another path.
+      // Without this the insert-ignore below swallows the new path forever.
+      await txn.delete('notes',
+          where: 'id = ? AND path != ?', whereArgs: [record.uid, record.path]);
 
       // INSERT OR IGNORE + UPDATE rather than INSERT OR REPLACE: replace
       // deletes and re-inserts the row, which cascades through `links` and

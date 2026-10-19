@@ -85,14 +85,16 @@ class AttachmentObservation {
   /// False when the file exists but the index says no note references it.
   final bool referencedByANote;
 
-  /// True when the derived index has a row for this path.
+  /// True when `sync_meta` holds a base row for this path.
   ///
   /// This is the flag that separates "another device just sent me a picture"
   /// from "I had this picture and it is gone", and the two want opposite
   /// answers. §4.4 is the reason the row survives the file's disappearance —
   /// "文件缺失时记录警告，不删除元数据" — so this is that rule being used for
   /// something, not a second piece of state invented to make the classifier
-  /// work.
+  /// work. It is deliberately *not* "a note currently references this path":
+  /// a deleted attachment is referenced by nothing, and treating that as
+  /// "never seen" re-downloads it from the server on every round, forever.
   final bool knownToVault;
 
   @override

@@ -4,6 +4,21 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/core/vault_paths.dart';
 import 'package:jotit/domain/vault/attachment_writer.dart';
+import 'package:path/path.dart' as p;
+import 'package:uuid/uuid.dart';
+// V4Options is only reachable through the sub-library; the override has to
+// name every parameter of Uuid.v4, deprecated `options` included.
+import 'package:uuid/data.dart' show V4Options;
+
+/// Pins the generated attachment name so a collision can be staged on purpose.
+class _PinnedUuid extends Uuid {
+  _PinnedUuid(this.value);
+
+  final String value;
+
+  @override
+  String v4({Map<String, dynamic>? options, V4Options? config}) => value;
+}
 
 /// v3.0 §9.3 rules 1–3 and ADR-11.
 ///
@@ -212,6 +227,55 @@ void main() {
         writer.attach(notePath: 'notes/a.md', sourcePath: source.path),
         throwsA(isA<AttachmentRefused>()),
       );
+    });
+  });
+
+  group('atomic write and ADR-11 exclusivity', () {
+    test('a successful attach leaves no temp file behind', () async {
+      // P1-13: 直写会在复制中途崩溃时留下截断附件，随后被索引、被同步
+      // 推给所有设备，而路径不可变让它永远无法修正。
+      final result = await writer.attach(
+        notePath: 'notes/a.md',
+        sourcePath: '/tmp/whatever.png',
+        bytes: Uint8List.fromList(List<int>.generate(256, (i) => i % 251)),
+      );
+
+      final file = File('${vault.path}/${result.attachmentPath}');
+      expect(file.existsSync(), isTrue);
+      expect(file.readAsBytesSync().length, 256);
+      final litter = Directory('${vault.path}/notes/attachments')
+          .listSync()
+          .where((e) => p.basename(e.path).contains('.jotit-tmp'));
+      expect(litter, isEmpty);
+    });
+
+    test('an existing attachment path is refused, not overwritten', () async {
+      // ADR-11: 附件内容不可变。目标已存在必须失败并告知用户，而不是
+      // 静默覆盖——覆盖会让另一台设备上的同一路径持有不同字节，而 schema
+      // 对此没有任何冲突状态可表达。
+      const fixed = '11111111-1111-4111-8111-111111111111';
+      final pinned =
+          AttachmentWriter(vaultRoot: vault.path, uuid: _PinnedUuid(fixed));
+      final existing = fileAt('notes/attachments/$fixed.png')
+        ..writeAsBytesSync(<int>[9, 9, 9]);
+
+      await expectLater(
+        pinned.attach(
+          notePath: 'notes/a.md',
+          sourcePath: '/tmp/whatever.png',
+          bytes: Uint8List.fromList(<int>[1]),
+        ),
+        throwsA(isA<AttachmentRefused>()),
+      );
+
+      expect(existing.readAsBytesSync(), <int>[9, 9, 9],
+          reason: 'the immutable file must survive byte for byte');
+      final litter = Directory('${vault.path}/notes/attachments')
+          .listSync()
+          .map((e) => p.basename(e.path))
+          .where((n) => n != '$fixed.png');
+      expect(litter, isEmpty,
+          reason: 'a refused attach must not leave debris behind');
     });
   });
 

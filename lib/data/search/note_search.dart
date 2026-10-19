@@ -65,12 +65,19 @@ class NoteSearch {
 
   Future<List<SearchHit>> _fts(String query, int limit) async {
     try {
+      // JOIN notes 而不是只查 notes_fts：notes_fts_au 触发器对 notes 的任何
+      // UPDATE 都重插 FTS 行，而 softDelete 就是一次 UPDATE —— 已删笔记会一直
+      // 留在 FTS 里，≥3 字符的查询能把它们搜出来。删除状态只存在于 notes 表，
+      // 所以在这里按 rowid 联结过滤。（不改触发器行为：删除/恢复等路径依赖它。）
+      //
+      // 表名不取别名：FTS5 的 MATCH 左操作数必须是表名本身，别了名就要写成
+      // `notes_fts MATCH ?` 之外的语法，反而不如保持原样直白。
       final rows = await _db.rawQuery(
         '''
-SELECT f.uid AS uid, f.path AS path, f.title AS title,
+SELECT notes_fts.uid AS uid, notes_fts.path AS path, notes_fts.title AS title,
        snippet(notes_fts, $_bodyColumn, '\u0001', '\u0002', '\u2026', 16) AS snippet
-FROM notes_fts f
-WHERE notes_fts MATCH ?
+FROM notes_fts JOIN notes n ON n.rowid = notes_fts.rowid
+WHERE notes_fts MATCH ? AND n.is_deleted = 0
 ORDER BY rank
 LIMIT ?
 ''',
