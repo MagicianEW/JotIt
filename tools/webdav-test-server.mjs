@@ -8,12 +8,17 @@
 // takes its capabilities as flags.
 //
 //   node tools/webdav-test-server.mjs --root ./.webdav --port 35116
+//   node tools/webdav-test-server.mjs --port 0        # any free port
 //   node tools/webdav-test-server.mjs --no-ctag      # Synology-like
 //   node tools/webdav-test-server.mjs --no-if-match   # nginx-dav-like
 //   node tools/webdav-test-server.mjs --no-if-none-match
 //
 // ETag values are opaque and deliberately change whenever content changes;
 // nothing in JotIt is allowed to parse them.
+//
+// `--port 0` asks the OS for a free port. The endpoint that was actually
+// bound is printed, so a caller that cannot pick a port itself can read it
+// back instead of guessing one that may already be taken.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -468,9 +473,13 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  // The port actually bound, not the one asked for: `--port 0` means "any
+  // free port", and a caller that guessed the number would then be talking
+  // to nothing. The endpoint is printed so the caller can read it back.
+  const actual = server.address().port;
   console.log(`JotIt test WebDAV server`);
   console.log(`  root       ${ROOT}`);
-  console.log(`  endpoint   http://${HOST}:${PORT}${BASE}/`);
+  console.log(`  endpoint   http://${HOST}:${actual}${BASE}/`);
   console.log(`  auth       ${USER} / ${PASS}`);
   console.log(`  getctag    ${SUPPORTS_CTAG ? 'yes' : 'NO (Synology-like)'}`);
   console.log(`  If-Match   ${SUPPORTS_IF_MATCH ? 'yes (honoured)' : 'NO (nginx-dav-like)'}`);

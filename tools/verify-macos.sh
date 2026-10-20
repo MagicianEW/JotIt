@@ -37,7 +37,12 @@ xcode-select -p >/dev/null 2>&1 || { bad 'no active Xcode (xcode-select -p fails
 ok "Xcode $(xcodebuild -version | head -1 | awk '{print $2}')"
 
 say '2. analysis and tests'
-if flutter analyze; then ok 'dart analyze clean'; else bad 'dart analyze'; fi
+# `dart analyze`, not `flutter analyze`: the label has always said so, and
+# `flutter analyze` dies with a FormatException on a path that is not pure
+# ASCII (the LSP frame carries the workspace path, and the Chinese directory
+# name breaks the parser). The static analysis is identical; only the
+# wrapper differs.
+if dart analyze; then ok 'dart analyze clean'; else bad 'dart analyze'; fi
 if flutter test; then ok 'flutter test'; else bad 'flutter test'; fi
 
 say '3. release build'
@@ -78,13 +83,56 @@ else
   bad "CFBundleName is '${NAME:-unknown}' — the Dock and the firewall prompt will show it"
 fi
 
-say '5. GUI, against the real server'
+say '5. GUI, against a real server'
+# The same full-UI path the Windows run used: location gate → new note →
+# type → Ctrl+S → settings → add remote → sync → read the bytes back over
+# HTTP → delete what it wrote.
+#
+# Without a NAS to point at, the bundled test server stands in. A stage that
+# is skipped on every machine but the author's is a stage that catches
+# nothing — and this one is what catches the GUI path breaking, which is the
+# part the unit suite cannot reach at all.
+DAV_PID=''
+DAV_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jotit_dav.XXXXXX")"
+cleanup_dav() {
+  if [ -n "$DAV_PID" ]; then kill "$DAV_PID" 2>/dev/null; fi
+  rm -rf "$DAV_ROOT"
+}
+trap cleanup_dav EXIT
+
 if [ -z "${JOTIT_DAV_URL:-}" ] || [ -z "${JOTIT_DAV_USER:-}" ] || [ -z "${JOTIT_DAV_PASS:-}" ]; then
-  printf '  \033[33mSKIP\033[0m JOTIT_DAV_URL / _USER / _PASS not all set\n'
-else
-  # The same full-UI path the Windows run used: location gate → new note →
-  # type → Ctrl+S → settings → add remote → sync → read the bytes back over
-  # HTTP → delete what it wrote.
+  if ! command -v node >/dev/null; then
+    printf '  \033[33mSKIP\033[0m no JOTIT_DAV_* and no node for the bundled test server\n'
+  else
+    # `--port 0` lets the OS pick a free port, and the server prints the one
+    # it got. A hard-coded port is a coin toss: if something else is already
+    # listening there, the server cannot bind and the test ends up talking to
+    # a stranger — or to nothing, which looks exactly like a broken client.
+    node tools/webdav-test-server.mjs --root "$DAV_ROOT" --port 0 \
+      >"$DAV_ROOT/server.log" 2>&1 &
+    DAV_PID=$!
+    # Out of the shell's job table: otherwise the cleanup kill reports
+    # "Terminated: 15 node ..." on stderr and the run looks like it failed.
+    disown "$DAV_PID" 2>/dev/null || true
+    DAV_URL=''
+    for _ in $(seq 1 40); do
+      DAV_URL=$(sed -n 's/.*endpoint  *\(http:\/\/[^ ]*\).*/\1/p' \
+                "$DAV_ROOT/server.log" 2>/dev/null | head -1)
+      if [ -n "$DAV_URL" ]; then break; fi
+      sleep 0.25
+    done
+    if [ -z "$DAV_URL" ]; then
+      bad 'the bundled test server did not come up'
+    else
+      export JOTIT_DAV_URL="${DAV_URL%/}"
+      export JOTIT_DAV_USER=testuser
+      export JOTIT_DAV_PASS=test
+      ok "using the bundled test server at $JOTIT_DAV_URL"
+    fi
+  fi
+fi
+
+if [ -n "${JOTIT_DAV_URL:-}" ]; then
   if flutter drive \
       --driver=test_driver/integration_test.dart \
       --target=integration_test/nas_gui_test.dart \
@@ -93,6 +141,8 @@ else
   else
     bad 'flutter drive -d macos'
   fi
+else
+  printf '  \033[33mSKIP\033[0m no WebDAV server to point the GUI test at\n'
 fi
 
 say 'result'
