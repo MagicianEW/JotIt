@@ -252,7 +252,7 @@ void main() {
     pane.toggleQuote();
     final png = makeSource('shot.png', <int>[0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
 
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     expect(find.byType(SuperEditor), findsNothing,
@@ -292,7 +292,7 @@ void main() {
     final state = tester.state<EditorPageState>(find.byType(EditorPage));
 
     final png = makeSource('plain.png', <int>[1, 2, 3]);
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     expect(find.textContaining('已插入'), findsOneWidget);

@@ -192,6 +192,52 @@ void main() {
     expect(blob, isNot(contains('test')));
   });
 
+  testWidgets('a failed write is reported instead of swallowed', (tester) async {
+    // P1-3: the settings page wrote to the database without a try/catch. A
+    // failure — a locked database, a full disk, a cipher that cannot seal —
+    // was an unhandled async error: the dialog had closed, the page looked
+    // unchanged, and the user believed the remote was saved when it was not.
+    await openSettings(tester);
+
+    // The database stops accepting writes.
+    await read(tester, () => vault.db.execute('PRAGMA query_only = 1'));
+
+    await addRemote(tester, '${dav.baseUri()}');
+
+    expect(find.textContaining('保存远端失败'), findsOneWidget,
+        reason: 'a write that did not happen has to say so');
+  });
+
+  testWidgets('a PIN that could not be saved says so', (tester) async {
+    // The same hole on the other side of the page. A PIN that failed to
+    // write leaves the lock unarmed — the screen is still photographable —
+    // and the user walks away believing the app is locked.
+    await openSettings(tester);
+    await read(tester, () => vault.db.execute('PRAGMA query_only = 1'));
+
+    await act(tester, () async {
+      await tester.tap(find.widgetWithText(TextButton, '设置'));
+      for (var i = 0;
+          i < 20 && find.byKey(const ValueKey('new-pin')).evaluate().isEmpty;
+          i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await tester.enterText(find.byKey(const ValueKey('new-pin')), '4815');
+      await tester
+          .enterText(find.byKey(const ValueKey('new-pin-confirm')), '4815');
+      await tester.tap(find.text('保存'));
+    }, pumps: 10);
+    // The PIN is hashed with 600k PBKDF2 rounds before it reaches the
+    // database, so the failure arrives a second or two later.
+    await waitFor(tester, find.textContaining('设置 PIN 失败'));
+
+    expect(find.textContaining('设置 PIN 失败'), findsOneWidget,
+        reason: 'a lock that was not armed has to say so');
+    expect(await read(tester, () => vault.lock.isConfigured()), isFalse,
+        reason: 'and the truth is checked against the database, not the page');
+  });
+
   testWidgets('a sync run uploads the vault and reports what it did',
       (tester) async {
     await seedNote(tester, 'notes/a.md', 'u-a', 'first body');

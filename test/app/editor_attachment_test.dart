@@ -100,7 +100,7 @@ void main() {
     final state = await openEditor(tester);
     final png = makeSource('shot.png', <int>[0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
 
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     final attachments = Directory(p.join(root.path, 'notes', 'attachments'));    expect(attachments.existsSync(), isTrue,
@@ -132,7 +132,7 @@ void main() {
     final state = await openEditor(tester);
     final png = makeSource('x.png', <int>[1, 2, 3, 4]);
 
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     final text = tester
@@ -157,7 +157,7 @@ void main() {
     final state = await openEditor(tester);
     final png = makeSource('y.png', <int>[9, 9]);
 
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     final beforeSave = await tester.runAsync(() => vault.notes.attachmentPaths());
@@ -181,7 +181,7 @@ void main() {
     final state = await openEditor(tester);
     final png = makeSource('z.png', <int>[7]);
 
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     // The failure this guards against is silent and absolute: a path built
@@ -196,7 +196,7 @@ void main() {
     final state = await openEditor(tester);
 
     await tester.runAsync(
-        () => state.attachForTesting(p.join(root.path, 'nope.png')));
+        () => state.insertFile(p.join(root.path, 'nope.png')));
     await settle(tester);
 
     expect(find.textContaining('插入失败'), findsOneWidget,
@@ -209,7 +209,7 @@ void main() {
     final state = await openEditor(tester);
     final png = makeSource('w.png', <int>[3]);
 
-    await tester.runAsync(() => state.attachForTesting(png.path));
+    await tester.runAsync(() => state.insertFile(png.path));
     await settle(tester);
 
     // The link only exists in the buffer until the user saves; leaving without

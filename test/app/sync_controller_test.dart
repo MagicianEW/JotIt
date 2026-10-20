@@ -102,4 +102,47 @@ void main() {
     expect(await vault.notes.byPath('notes/a.md'), isNotNull,
         reason: 'the row must survive an idle round');
   });
+
+  test('the running flag is set before the first await, so a second tap is refused',
+      () async {
+    await vault.writeRaw(
+        'notes/a.md', utf8.encode('---\nuid: u-a\n---\n\nbody\n'));
+    await vault.reindex();
+
+    final controller = container.read(syncControllerProvider.notifier);
+    final first = controller.run(rootId);
+
+    // The guard and the announcement have to be the same moment. A flag set
+    // after the first await leaves a window in which a second tap passes the
+    // guard — and the second round clears the flag while the first is still
+    // running, so the spinner vanishes in the middle of a round.
+    expect(controller.anyRunning, isTrue,
+        reason: 'the round must announce itself synchronously');
+
+    final second = await controller.run(rootId);
+    expect(second, isNull,
+        reason: 'a second tap during the round must not open a second round');
+
+    await first;
+    expect(controller.anyRunning, isFalse,
+        reason: 'the flag must be cleared when the round ends');
+  });
+
+  test('a remote without a password is reported, and the flag is cleared',
+      () async {
+    await vault.roots.upsert(SyncRootRecord(
+      id: 'root-no-password',
+      name: 'no password',
+      baseUrl: dav.baseUri().toString(),
+      username: 'testuser',
+    ));
+
+    final controller = container.read(syncControllerProvider.notifier);
+    final report = await controller.run('root-no-password');
+
+    expect(report, isNotNull);
+    expect(report!.result.error, contains('尚未保存这个远端的密码'));
+    expect(controller.anyRunning, isFalse,
+        reason: 'a round that never opened a connection still has to clear it');
+  });
 }

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:sqflite_common/sqlite_api.dart';
 
 /// The application lock of v3.0 §8.3.
@@ -63,7 +64,8 @@ class AppLock {
   /// new start rather than a continuation of whatever the old one was.
   Future<void> setPin(String pin) async {
     final salt = _randomSalt();
-    final hash = derivePin(pin, salt: salt, iterations: iterations);
+    final hash =
+        await derivePinAsync(pin, salt: salt, iterations: iterations);
     await _db.insert(
       'app_lock',
       {
@@ -115,7 +117,7 @@ class AppLock {
     }
 
     final expected = state.pinHash;
-    final actual = derivePin(
+    final actual = await derivePinAsync(
       pin,
       salt: Uint8List.fromList(_unhex(state.salt)),
       iterations: state.iterations,
@@ -165,6 +167,24 @@ class AppLock {
   /// True when the lock is active at [nowMs].
   static bool isLockedOut(LockState state, int nowMs) =>
       state.lockedUntil > nowMs;
+
+  /// PBKDF2-HMAC-SHA256, hex-encoded, on a background isolate.
+  ///
+  /// 600k rounds take roughly half a second on a phone and closer to two on
+  /// a cheap one, and running them on the main isolate freezes the UI at
+  /// exactly the moment the user is looking at it: unlocking the app, or
+  /// setting a PIN. The work moves to another isolate and the frame keeps
+  /// ticking.
+  static Future<String> derivePinAsync(
+    String pin, {
+    required Uint8List salt,
+    required int iterations,
+    int length = kKeyBytes,
+  }) =>
+      compute(
+        _derivePinOnIsolate,
+        (pin: pin, salt: salt, iterations: iterations, length: length),
+      );
 
   /// PBKDF2-HMAC-SHA256, hex-encoded.
   ///
@@ -335,6 +355,22 @@ class UnlockResult {
 
 String hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+/// What the background worker needs, in a shape that can cross an isolate.
+typedef _Pbkdf2Request =
+    ({String pin, Uint8List salt, int iterations, int length});
+
+/// The isolate entry point for [AppLock.derivePinAsync].
+///
+/// Top-level, because that is what an isolate entry point has to be. It
+/// calls the same primitive as the synchronous path — the two have to agree
+/// bit for bit, or a PIN set on one device would not open on another.
+String _derivePinOnIsolate(_Pbkdf2Request request) => AppLock.derivePin(
+      request.pin,
+      salt: request.salt,
+      iterations: request.iterations,
+      length: request.length,
+    );
 
 List<int> _unhex(String s) {
   final out = <int>[];

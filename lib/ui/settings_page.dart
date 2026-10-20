@@ -7,7 +7,6 @@ import 'package:path/path.dart' as p;
 
 import '../app/providers.dart';
 import '../app/sync_controller.dart';
-import '../app/vault_session.dart';
 import '../data/db/sync_root_store.dart';
 import '../domain/sync/conflict_writer.dart';
 import 'remote_form.dart';
@@ -149,7 +148,11 @@ class _SyncRootsSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final roots = ref.watch(syncRootsProvider);
-    final report = ref.watch(syncControllerProvider);
+    // Watched, not read: the controller's state carries "a round is
+    // running", and a page that does not rebuild on it never shows the
+    // spinner.
+    final syncState = ref.watch(syncControllerProvider);
+    final report = syncState.report;
     final controller = ref.read(syncControllerProvider.notifier);
 
     return Column(
@@ -254,9 +257,20 @@ class _SyncRootsSection extends ConsumerWidget {
                   : () async {
                       final result = await controller.run(root.id);
                       if (!context.mounted) return;
-                      if (result?.result.error != null) {
+                      if (result == null) {
+                        // The tap did nothing. Saying so is the difference
+                        // between a button that is busy and a button that is
+                        // broken.
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          content: Text('同步失败：${result!.result.error}'),
+                          content: Text(controller.anyRunning
+                              ? '已经有一轮同步在跑了'
+                              : '这个远端现在无法同步'),
+                        ));
+                        return;
+                      }
+                      if (result.result.error != null) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text('同步失败：${result.result.error}'),
                         ));
                       }
                     },
@@ -334,9 +348,19 @@ Future<void> _editRoot(
   );
   if (result == null) return;
 
+  // Every write below can fail — SQLite locked, disk full, the credential
+  // cipher failing to seal — and a failure that is not reported is the worst
+  // kind: the dialog is already closed, so the user believes the remote was
+  // saved, and it was not. Every path therefore reports, and the list is
+  // re-read afterwards so what is on screen is what is really stored.
   if (result.delete) {
-    await session.roots.remove(existing!.id);
-    invalidateSyncRoots(ref);
+    try {
+      await session.roots.remove(existing!.id);
+      invalidateSyncRoots(ref);
+    } on Object catch (e) {
+      if (!context.mounted) return;
+      _reportError(context, '删除远端失败：$e');
+    }
     return;
   }
 
@@ -351,9 +375,36 @@ Future<void> _editRoot(
     username: result.username.trim().isEmpty ? null : result.username.trim(),
   );
 
-  await session.roots.upsert(record);
-  if (result.password.isNotEmpty) await session.setPassword(record, result.password);
-  invalidateSyncRoots(ref);
+  try {
+    if (result.password.isEmpty) {
+      await session.roots.upsert(record);
+    } else {
+      // Seal first, then write once. The two-step version wrote the record
+      // and *then* the password, so a failure between them left a remote
+      // with an address and no credentials — half-configured, and the next
+      // sync fails against it for a reason the settings page cannot show.
+      final sealed = await session.cipher.seal(result.password);
+      await session.roots.upsert(record.copyWith(credentialBlob: sealed));
+    }
+    invalidateSyncRoots(ref);
+  } on Object catch (e) {
+    invalidateSyncRoots(ref);
+    if (!context.mounted) return;
+    _reportError(context, '保存远端失败：$e');
+  }
+}
+
+/// Says what went wrong, in the only place the user is looking.
+///
+/// The alternative — letting the exception escape — leaves an unhandled
+/// async error that no dialog is showing any more: the form is closed, the
+/// page is unchanged, and the user has no idea that their PIN or their
+/// remote was not saved.
+void _reportError(BuildContext context, String message) {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(message)));
 }
 
 /// What [_RemoteDialog] hands back.
@@ -532,53 +583,54 @@ class _DeadLettersSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final vault = ref.watch(vaultProvider);
-    return vault.maybeWhen(
+    // Watched, not built here. A `FutureBuilder` whose `future` is created
+    // inside `build` asks again every time the tree rebuilds — and the
+    // settings page rebuilds on its own state changes. The snapshot resets
+    // to "loading" each time, so the block flickers, and the same queries
+    // run again and again for the same answer.
+    final dead = ref.watch(_deadLettersProvider);
+    return dead.maybeWhen(
       orElse: () => const SizedBox.shrink(),
-      data: (session) => FutureBuilder<List<SyncRootRecord>>(
-        future: session.roots.enabled(),
-        builder: (context, AsyncSnapshot<List<SyncRootRecord>> snap) {
-          final roots = snap.data ?? const <SyncRootRecord>[];
-          if (roots.isEmpty) return const SizedBox.shrink();
-
-          return FutureBuilder(
-            future: _collectDeadLetters(session),
-            builder: (context, dead) {
-              final entries = dead.data ?? const [];
-              if (entries.isEmpty) return const SizedBox.shrink();
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.error_outline),
-                    title: Text('${entries.length} 条操作已停止重试'),
-                    subtitle: Text(entries
-                        .map((e) => '${e.path}\n${e.lastError ?? ''}')
-                        .join('\n')),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      ),
+      data: (entries) {
+        if (entries.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.error_outline),
+              title: Text('${entries.length} 条操作已停止重试'),
+              subtitle: Text(entries
+                  .map((e) => '${e.path}\n${e.lastError ?? ''}')
+                  .join('\n')),
+            ),
+          ],
+        );
+      },
     );
   }
-
-  Future<List<_DeadLetter>> _collectDeadLetters(VaultSession session) async {
-    final out = <_DeadLetter>[];
-    for (final root in await session.roots.enabled()) {
-      for (final op in await session.queue.deadLetters(root.id)) {
-        out.add(_DeadLetter(
-          path: op.targetPath,
-          lastError: op.lastError,
-        ));
-      }
-    }
-    return out;
-  }
 }
+
+/// The queued operations no device can make progress on any more.
+///
+/// Watched for the note version as well: a dead letter appears when a
+/// queued operation runs out of retries, which happens *during* a round — so
+/// without this the list would keep showing the state from before the round
+/// that produced it.
+final _deadLettersProvider = FutureProvider<List<_DeadLetter>>((ref) async {
+  final session = await ref.watch(vaultProvider.future);
+  ref.watch(notesVersionProvider);
+  final out = <_DeadLetter>[];
+  for (final root in await session.roots.enabled()) {
+    for (final op in await session.queue.deadLetters(root.id)) {
+      out.add(_DeadLetter(
+        path: op.targetPath,
+        lastError: op.lastError,
+      ));
+    }
+  }
+  return out;
+});
 
 class _DeadLetter {
   const _DeadLetter({required this.path, required this.lastError});
@@ -609,9 +661,19 @@ class _LockSectionState extends ConsumerState<_LockSection> {
   }
 
   Future<void> _load() async {
-    final session = await ref.read(vaultProvider.future);
-    final value = await session.lock.isConfigured();
-    if (mounted) setState(() => _configured = value);
+    // The read can fail for the same reason the write did — a locked or
+    // damaged database. Letting that escape would leave the section showing
+    // whatever it last knew, which is exactly the "thinks the PIN is set when
+    // it is not" state this section exists to rule out.
+    try {
+      final session = await ref.read(vaultProvider.future);
+      final value = await session.lock.isConfigured();
+      if (mounted) setState(() => _configured = value);
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() => _configured = false);
+      _reportError(context, '读取应用锁状态失败：$e');
+    }
   }
 
   @override
@@ -662,13 +724,28 @@ class _LockSectionState extends ConsumerState<_LockSection> {
     // continuation of whatever the old one was being brute-forced against.
     // Through the session, so Android's FLAG_SECURE is set in the same breath
     // (§8.3) — a lock that arms without protecting the screen protects nothing.
-    await session.setPin(pin);
+    //
+    // A failure here is the one this page must never swallow: the dialog is
+    // closed, the user walks away believing the lock is armed, and it is
+    // not — the screenshots are still allowed and nothing on the page says
+    // so. The error is reported and the real state is re-read.
+    try {
+      await session.setPin(pin);
+    } on Object catch (e) {
+      if (!mounted) return;
+      _reportError(context, '设置 PIN 失败：$e');
+    }
     await _load();
   }
 
   Future<void> _remove() async {
     final session = await ref.read(vaultProvider.future);
-    await session.clearPin();
+    try {
+      await session.clearPin();
+    } on Object catch (e) {
+      if (!mounted) return;
+      _reportError(context, '关闭应用锁失败：$e');
+    }
     await _load();
   }
 }

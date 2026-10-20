@@ -13,12 +13,13 @@ import 'package:path/path.dart' as p;
 /// random per-blob nonce and an authentication tag, so the database alone never
 /// yields a password, and a tampered blob is rejected rather than decrypted.
 /// What it is *not* yet is §8.3's "keyed by the application master key": today
-/// the 32-byte master key sits in the app data directory beside the database it
-/// protects, so anyone who can read the profile directory has both. That is a
-/// real improvement over a cleartext column and a real gap against the spec.
-/// Closing it means DPAPI on Windows, the Keychain on macOS, the Android
-/// Keystore — one platform at a time, starting with the one this app is being
-/// built for.
+/// the 32-byte master key sits in the app's profile directory, while the
+/// database it protects sits in the vault, so anyone who can read the profile
+/// directory has the key and anyone who can read the vault has the sealed
+/// blobs — and the two together are the password. That is a real improvement
+/// over a cleartext column and a real gap against the spec. Closing it means
+/// DPAPI on Windows, the Keychain on macOS, the Android Keystore — one
+/// platform at a time, starting with the one this app is being built for.
 ///
 /// [_loadOrCreateKey] is the only method that knows where the key lives, so
 /// that swap is a one-method change rather than an audit of this file.

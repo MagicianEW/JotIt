@@ -5,6 +5,10 @@ build/
 *.iml
 .idea/
 
+# macOS 的 Finder 会在每个被浏览过的目录里放一个 .DS_Store。
+# 这个仓库在 macOS 上开发，它不属于任何人的代码。
+.DS_Store
+
 # Flutter/Dart local state
 # pubspec.lock 有意入库：JotIt 是应用而不是 package，Windows 与 macOS 两台
 # 机器必须锁定同一套依赖版本，否则同一份代码会在另一台机器上解析出不同的

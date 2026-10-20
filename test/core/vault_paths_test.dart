@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/core/vault_paths.dart';
 import 'package:jotit/domain/sync/conflict_naming.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
   group('normalizeRelative', () {
@@ -46,7 +47,7 @@ void main() {
         linkTarget: 'attachments/x.png',
       );
       expect(out, isNotNull);
-      expect(out, endsWith(r'daily\attachments\x.png'));
+      expect(out, endsWith(p.joinAll(['daily', 'attachments', 'x.png'])));
     });
 
     test('permits ".." when the result stays inside notes/', () {
@@ -58,7 +59,7 @@ void main() {
         linkTarget: '../../daily/attachments/y.png',
       );
       expect(out, isNotNull);
-      expect(out, endsWith(r'daily\attachments\y.png'));
+      expect(out, endsWith(p.joinAll(['daily', 'attachments', 'y.png'])));
     });
 
     test('rejects links that climb out of the synced subtree', () {

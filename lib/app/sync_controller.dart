@@ -41,44 +41,86 @@ class SyncRunReport {
   }
 }
 
+/// What the settings page needs to know about the controller: the last
+/// report, and whether a round is running right now.
+///
+/// The running flag used to be a plain field on the controller. A field is
+/// invisible to the widget tree, so the page never rebuilt when a round
+/// started and the spinner never appeared — the button looked broken while
+/// it was working. It is state now, and state is what makes a widget
+/// rebuild.
+class SyncControllerState {
+  const SyncControllerState({this.report, this.runningRootId});
+
+  /// The last round that finished, or null when none has.
+  final SyncRunReport? report;
+
+  /// The remote a round is running against, or null when nothing runs.
+  final String? runningRootId;
+
+  bool isRunning(String rootId) => runningRootId == rootId;
+
+  bool get anyRunning => runningRootId != null;
+
+  SyncControllerState copyWith({
+    SyncRunReport? report,
+    String? runningRootId,
+    bool clearRunning = false,
+  }) =>
+      SyncControllerState(
+        report: report ?? this.report,
+        runningRootId:
+            clearRunning ? null : (runningRootId ?? this.runningRootId),
+      );
+}
+
 /// Holds the one round that may be in flight.
 ///
 /// Single-flight is the engine's job, but the engine only knows about its own
 /// sessions; the UI needs to know whether *any* round is running so it can
 /// disable the button instead of queueing a second tap.
-class SyncController extends Notifier<SyncRunReport?> {
+class SyncController extends Notifier<SyncControllerState> {
   @override
-  SyncRunReport? build() => null;
+  SyncControllerState build() => const SyncControllerState();
 
-  String? _runningRootId;
-  bool isRunning(String rootId) => _runningRootId == rootId;
-  bool get anyRunning => _runningRootId != null;
+  bool isRunning(String rootId) => state.isRunning(rootId);
 
-  /// Runs one round against [root].
+  bool get anyRunning => state.anyRunning;
+
+  /// Runs one round against the remote [rootId].
   ///
   /// Returns null when there is no usable credential, rather than opening a
   /// connection that is guaranteed to answer 401. Re-entrancy is refused here
   /// as well as in the engine so a double tap does not open two clients.
   Future<SyncRunReport?> run(String rootId) async {
-    if (_runningRootId != null) return null;
+    if (state.anyRunning) return null;
 
-    final session = await ref.read(vaultProvider.future);
-    final root = await session.roots.byId(rootId);
-    if (root == null) return null;
-
-    final password = await session.passwordFor(root);
-    if (password == null) {
-      state = SyncRunReport(
-        rootId: root.id,
-        rootName: root.name,
-        result: const SyncBatchResult(error: '尚未保存这个远端的密码'),
-        finishedAt: DateTime.now(),
-      );
-      return state;
-    }
-
-    _runningRootId = rootId;
+    // Announced *before* the first await, not after it. The guard above only
+    // holds for as long as nothing is running; a second tap landing in the
+    // window between the check and the announcement would pass the check,
+    // and two rounds would run at once — the second one clearing the
+    // "running" flag while the first is still going, so the spinner would
+    // vanish in the middle of a round.
+    _set(state.copyWith(runningRootId: rootId));
+    SyncRootRecord? found;
     try {
+      final session = await ref.read(vaultProvider.future);
+      found = await session.roots.byId(rootId);
+      final root = found;
+      if (root == null) return null;
+
+      final password = await session.passwordFor(root);
+      if (password == null) {
+        final report = SyncRunReport(
+          rootId: root.id,
+          rootName: root.name,
+          result: const SyncBatchResult(error: '尚未保存这个远端的密码'),
+          finishedAt: DateTime.now(),
+        );
+        _set(state.copyWith(report: report));
+        return report;
+      }
+
       final handle = await session.openSync(root, password);
       final now = DateTime.now().millisecondsSinceEpoch;
       try {
@@ -113,7 +155,11 @@ class SyncController extends Notifier<SyncRunReport?> {
         if (!result.isEmpty) {
           await session.reindex();
         }
-        invalidateNotesFromRef(ref);
+        // The container can be torn down while a round is in flight — a test's
+        // teardown, a hot restart. Reading a disposed ref throws, and the
+        // throw would land in the catch below and be reported as a failed
+        // round, which is the one thing this round is not.
+        if (ref.mounted) invalidateNotesFromRef(ref);
 
         final report = SyncRunReport(
           rootId: rootId,
@@ -121,7 +167,7 @@ class SyncController extends Notifier<SyncRunReport?> {
           result: result,
           finishedAt: DateTime.now(),
         );
-        state = report;
+        _set(state.copyWith(report: report));
         return report;
       } finally {
         await handle.close();
@@ -130,14 +176,17 @@ class SyncController extends Notifier<SyncRunReport?> {
       _attempts++;
       final report = SyncRunReport(
         rootId: rootId,
-        rootName: root.name,
+        // The root may not have been read at all — the vault itself may have
+        // failed to open. The id is the best name available then, and it is
+        // enough to identify the remote in the error line.
+        rootName: found?.name ?? rootId,
         result: SyncBatchResult(error: '$e'),
         finishedAt: DateTime.now(),
       );
-      state = report;
+      _set(state.copyWith(report: report));
       return report;
     } finally {
-      _runningRootId = null;
+      _set(state.copyWith(clearRunning: true));
     }
   }
 
@@ -145,10 +194,23 @@ class SyncController extends Notifier<SyncRunReport?> {
   /// `sync_roots.next_attempt_at` by the engine, so a restart does not reset
   /// the wait — this counter only has to feed the formula.
   int _attempts = 0;
+
+  /// Writes the state, unless the provider has been disposed underneath us.
+  ///
+  /// A round outlives the provider that started it whenever the container is
+  /// torn down mid-flight — a test's teardown, a hot restart. Writing to a
+  /// disposed provider's state throws, and that throw comes out of the
+  /// `finally` that was only meant to clear a flag, so the round's real
+  /// result is lost behind a disposal error. There is nothing to say to a
+  /// provider that no longer exists.
+  void _set(SyncControllerState next) {
+    if (!ref.mounted) return;
+    state = next;
+  }
 }
 
 final syncControllerProvider =
-    NotifierProvider<SyncController, SyncRunReport?>(SyncController.new);
+    NotifierProvider<SyncController, SyncControllerState>(SyncController.new);
 
 /// The configured remotes, re-read whenever [syncRootsVersionProvider] moves.
 final syncRootsProvider = FutureProvider<List<SyncRootRecord>>((ref) async {

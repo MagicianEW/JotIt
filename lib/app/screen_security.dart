@@ -54,15 +54,30 @@ class ScreenSecurity {
     void Function(Object error)? onUnavailable,
   }) async {
     if (_applied == lockConfigured) return;
-    _applied = lockConfigured;
     try {
       await _channel.invokeMethod<void>(_method, <String, Object?>{
         'enabled': lockConfigured,
       });
+      // Only remembered once the platform has accepted it. Setting the flag
+      // before the call would make a failure permanent: the next call with
+      // the same value would return early on the `_applied` check and never
+      // try again, so a PIN that was set while the platform was refusing the
+      // call would leave the screen unprotected forever, with no way to
+      // recover short of removing the PIN.
+      _applied = lockConfigured;
     } on MissingPluginException {
       // Windows, macOS, and every widget test. The flag has no meaning there;
       // §8.3 only asks Android for it.
+      //
+      // The value is *not* remembered: the plugin may be registered later
+      // (a hot restart, a test that installs the mock after the first call),
+      // and remembering "already applied" for a platform that never applied
+      // anything would be a lie the next call would act on.
     } on PlatformException catch (e) {
+      // Same reason: the flag was not applied, so nothing may be remembered
+      // about it. The next call — from the settings page, from the lock
+      // gate, from the next app start — tries again.
+      _applied = null;
       onUnavailable?.call(e);
     }
   }

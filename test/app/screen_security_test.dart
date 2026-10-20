@@ -100,6 +100,52 @@ void main() {
     expect((errors.single as PlatformException).code, 'boom');
   });
 
+  test('a refusal is not remembered, so the next call tries again', () async {
+    // P1-4: the applied value used to be set *before* the platform was asked.
+    // A refusal then left the app believing the screen was protected when it
+    // was not — and every later call with the same value returned early on
+    // the "already applied" check, so the retry never happened. A PIN set
+    // while the platform was refusing left the screen photographable until
+    // the PIN was removed.
+    final errors = <Object>[];
+    failWith = PlatformException(code: 'boom');
+    final security = ScreenSecurity();
+
+    await security.applyForLock(
+      lockConfigured: true,
+      onUnavailable: errors.add,
+    );
+    expect(errors, hasLength(1));
+    expect(calls, hasLength(1));
+
+    // The platform comes back. The next call has to try again.
+    failWith = null;
+    calls.clear();
+    await security.applyForLock(lockConfigured: true);
+
+    expect(calls, hasLength(1),
+        reason: 'the refusal must not be remembered as "already applied"');
+    expect(calls.single.arguments, <String, Object?>{'enabled': true});
+  });
+
+  test('a platform with no such flag is not remembered either', () async {
+    // Windows and macOS have no `FLAG_SECURE`. Remembering "already applied"
+    // for a platform that never applied anything would be a lie the next
+    // call would act on — and a test that installs the mock after the first
+    // call is exactly that case.
+    failWith = MissingPluginException('no implementation for setFlagSecure');
+    final security = ScreenSecurity();
+    await security.applyForLock(lockConfigured: true);
+    expect(calls, hasLength(1));
+
+    failWith = null;
+    calls.clear();
+    await security.applyForLock(lockConfigured: true);
+
+    expect(calls, hasLength(1),
+        reason: 'nothing was applied, so nothing may be remembered about it');
+  });
+
   group('through the session', () {
     late Directory root;
     late VaultSession vault;

@@ -39,6 +39,15 @@ class _LockGateState extends ConsumerState<LockGate> {
   bool _locked = false;
   String? _error;
 
+  /// Set when the vault itself cannot be opened.
+  ///
+  /// The gate is the first thing the app draws, so a failure here used to
+  /// leave the spinner turning forever: the exception escaped, `_checking`
+  /// never became false, and the user had no way out of a screen that never
+  /// resolved. The Settings page has had an error branch for a while; this
+  /// one is the same idea.
+  String? _fatal;
+
   Timer? _ticker;
   Duration _remaining = Duration.zero;
 
@@ -56,19 +65,30 @@ class _LockGateState extends ConsumerState<LockGate> {
   }
 
   Future<void> _check() async {
-    final session = await ref.read(vaultProvider.future);
-    final configured = await session.lock.isConfigured();
-    // §8.3: the same read that decides whether to show this gate is what tells
-    // Android to protect the screen. Doing it here rather than in the settings
-    // screen means the recents thumbnail is already blanked on the very first
-    // launch after a restart, which is exactly when the flag is otherwise
-    // lost — the process that set it may not be running any more.
-    await session.syncScreenSecurity();
-    if (!mounted) return;
-    setState(() {
-      _locked = configured;
-      _checking = false;
-    });
+    try {
+      final session = await ref.read(vaultProvider.future);
+      final configured = await session.lock.isConfigured();
+      // §8.3: the same read that decides whether to show this gate is what tells
+      // Android to protect the screen. Doing it here rather than in the settings
+      // screen means the recents thumbnail is already blanked on the very first
+      // launch after a restart, which is exactly when the flag is otherwise
+      // lost — the process that set it may not be running any more.
+      await session.syncScreenSecurity();
+      if (!mounted) return;
+      setState(() {
+        _locked = configured;
+        _checking = false;
+      });
+    } on Object catch (e) {
+      // A vault that cannot be opened is not a vault that is locked, and it
+      // is not a vault that is unlocked either. Saying so — with a way out —
+      // is the only honest answer.
+      if (!mounted) return;
+      setState(() {
+        _fatal = '$e';
+        _checking = false;
+      });
+    }
   }
 
   /// Re-arms the countdown from the persisted deadline, so a lockout started
@@ -130,6 +150,54 @@ class _LockGateState extends ConsumerState<LockGate> {
   Widget build(BuildContext context) {
     if (_checking) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final fatal = _fatal;
+    if (fatal != null) {
+      final theme = Theme.of(context);
+      return Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Padding(
+                padding: const EdgeInsets.all(JotItTokens.s5),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Icon(Icons.error_outline,
+                        size: 40, color: theme.colorScheme.error),
+                    const SizedBox(height: JotItTokens.s3),
+                    Text(
+                      '打不开这个库',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: JotItTokens.s2),
+                    Text(
+                      fatal,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.error),
+                    ),
+                    const SizedBox(height: JotItTokens.s4),
+                    FilledButton(
+                      onPressed: () {
+                        setState(() {
+                          _fatal = null;
+                          _checking = true;
+                        });
+                        unawaited(_check());
+                      },
+                      child: const Text('重试'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
     }
     if (!_locked) return widget.child;
 

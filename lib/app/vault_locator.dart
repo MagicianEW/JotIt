@@ -26,6 +26,15 @@ class VaultLocator {
 
   File get _file => File(p.join(_appSupportDir.path, _fileName));
 
+  /// The app's private data directory — where the vault-location preference
+  /// and the credential cipher's master key live.
+  ///
+  /// Exposed so that everything the app keeps in the profile directory is
+  /// resolved from the same place. A test that redirects the locator to a
+  /// temp directory should not then have the cipher write its master key
+  /// into the real profile directory of the machine running the test.
+  Directory get appSupportDir => _appSupportDir;
+
   /// The default location, resolved lazily for the same reason the credential
   /// key is: `path_provider` is a platform channel, and putting it on the
   /// startup path makes the whole app untestable without a plugin.

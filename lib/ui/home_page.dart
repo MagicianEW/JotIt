@@ -87,7 +87,21 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
     if (title == null || !mounted) return;
 
-    final path = await session.createNote(title: title);
+    // Creating a note can fail — the disk is full, the name cannot be made
+    // into a file, the vault was closed underneath. The button's future was
+    // swallowed, so the user was left with a dialog that closed and nothing
+    // else: no note, no message, no idea which of the two happened.
+    final String path;
+    try {
+      path = await session.createNote(title: title);
+    } on Object catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('新建失败：$e')),
+      );
+      return;
+    }
+    if (!mounted) return;
     invalidateNotes(ref);
     if (!mounted) return;
     ref.read(openNoteProvider.notifier).open(path);
@@ -224,13 +238,41 @@ class _NoteList extends ConsumerWidget {
       error: (e, _) => _ErrorBox(message: '$e'),
       data: (state) {
         if (state.notes.isEmpty) return const _EmptyVault();
-        return ListView.builder(
-          // Room at the bottom so the extended FAB never covers the last
-          // note's row.
-          padding: const EdgeInsets.only(top: 4, bottom: 96),
-          itemCount: state.notes.length,
-          itemBuilder: (context, i) =>
-              _NoteTile(note: state.notes[i], showPath: false),
+        final truncated = state.notes.length < state.total;
+        return Column(
+          children: [
+            if (truncated)
+              // A list that quietly stops at 500 looks like the whole vault.
+              // Saying so costs one line and turns a mystery into a fact.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline,
+                        size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '只显示前 ${state.notes.length} 篇，共 ${state.total} 篇',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Expanded(
+              child: ListView.builder(
+                // Room at the bottom so the extended FAB never covers the last
+                // note's row.
+                padding: const EdgeInsets.only(top: 4, bottom: 96),
+                itemCount: state.notes.length,
+                itemBuilder: (context, i) =>
+                    _NoteTile(note: state.notes[i], showPath: false),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -394,7 +436,14 @@ class _NoteTile extends ConsumerWidget {
           .replaceFirst(RegExp(r'^#{1,6}\s+'), '')
           .replaceFirst(RegExp(r'^([-*+]|\d+\.)\s+'), '');
       if (cleaned.isEmpty) continue;
-      return cleaned.length > 60 ? '${cleaned.substring(0, 60)}…' : cleaned;
+      // Cut on code points, not on UTF-16 code units. An emoji at the cut
+      // point is two code units, and cutting between them leaves half a
+      // character on screen — the "乱码" a note starting with an emoji used
+      // to show.
+      final runes = cleaned.runes.toList();
+      return runes.length > 60
+          ? '${String.fromCharCodes(runes.take(60))}…'
+          : cleaned;
     }
     return '';
   }
