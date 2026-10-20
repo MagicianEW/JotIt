@@ -6,20 +6,30 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// 工程内固定的签名材料（android/key.properties + android/keystore/）。
+// 工程内固定的签名材料。
 //
-// 默认的 debug 签名取自每台机器各自的 ~/.android/debug.keystore，两台机器
-// 签出来的包不同 —— 装到同一台设备上会被系统以「签名不一致」拒绝，只能
-// 先卸载，而卸载会带走用户的笔记。签名固定在工程里之后，换机器、换设备
-// 都能直接覆盖安装。
+// 两份，性质完全不同：
 //
-// 缺了 key.properties 就退回 AGP 自带的 debug 签名：构建不应该因为一个
-// 附属文件不存在而失败。
+//   key.properties          开发用，**有意入库**。口令是公开的。
+//   key-release.properties  发布用，**绝不入库**（见 .gitignore）。
+//
+// 开发签名为什么固定：Android 的 debug 签名默认取自每台机器各自的
+// ~/.android/debug.keystore，两台机器编出来的同一个 App 签名不同 —— 装到
+// 同一台设备上会被系统以「签名不一致」拒绝，只能先卸载，而卸载会带走用户的
+// 笔记。签名固定在工程里之后，换机器、换设备都能直接覆盖安装。
 val signingProperties = Properties()
 val signingPropertiesFile = rootProject.file("key.properties")
 val hasFixedSigning = signingPropertiesFile.exists()
 if (hasFixedSigning) {
     signingPropertiesFile.inputStream().use { signingProperties.load(it) }
+}
+
+// 发布签名。有就用，没有就退回开发签名并把话说清楚。
+val releaseProperties = Properties()
+val releasePropertiesFile = rootProject.file("key-release.properties")
+val hasReleaseSigning = releasePropertiesFile.exists()
+if (hasReleaseSigning) {
+    releasePropertiesFile.inputStream().use { releaseProperties.load(it) }
 }
 
 android {
@@ -56,11 +66,21 @@ android {
                 keyPassword = signingProperties.getProperty("keyPassword")
             }
         }
+        if (hasReleaseSigning) {
+            create("jotitRelease") {
+                storeFile = rootProject.file(releaseProperties.getProperty("storeFile"))
+                storePassword = releaseProperties.getProperty("storePassword")
+                keyAlias = releaseProperties.getProperty("keyAlias")
+                keyPassword = releaseProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
-        // debug 和 release 用同一份签名，是有意为之：开发时用 release 包
-        // 覆盖安装到 debug 包上，不会因为签名不同而被拒。
+        // debug 用工程内那把固定密钥：换机器、换设备都能直接覆盖安装。
+        //
+        // 缺了 key.properties 就退回 AGP 自带的 debug 签名：构建不应该因为
+        // 一个附属文件不存在而失败。
         getByName("debug") {
             signingConfig = if (hasFixedSigning) {
                 signingConfigs.getByName("jotit")
@@ -69,10 +89,25 @@ android {
             }
         }
         release {
-            signingConfig = if (hasFixedSigning) {
-                signingConfigs.getByName("jotit")
-            } else {
-                signingConfigs.getByName("debug")
+            // release 优先用自己的私钥（key-release.properties，不入库）。
+            // 没有它时退回开发密钥——能装能用，但密钥是公开的，**不能上架**：
+            // 任何人都能签出一个「更新」装到用户手机上顶掉官方包。
+            signingConfig = when {
+                hasReleaseSigning -> signingConfigs.getByName("jotitRelease")
+                hasFixedSigning -> {
+                    // 打印到 stdout 而不是 logger.warn：Gradle 的 logger 在
+                    // 配置阶段常常被静默掉，而这条警告恰恰是最不能被静默的
+                    // 一次——它说的是「你手上这个包不能拿去上架」。
+                    println(
+                        "WARNING: no android/key-release.properties — the release " +
+                            "build is signed with the shared DEVELOPMENT key. That " +
+                            "key is public: anyone can sign an update that " +
+                            "replaces this app on a user's phone. Do not " +
+                            "publish a build signed this way.",
+                    )
+                    signingConfigs.getByName("jotit")
+                }
+                else -> signingConfigs.getByName("debug")
             }
         }
     }

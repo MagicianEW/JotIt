@@ -1,0 +1,22 @@
+# 复制这份文件为 `key-release.properties`，填上你自己的发布密钥。
+#
+# `key-release.properties` **不入库**（见 .gitignore）——发布密钥是私钥，
+# 进了版本库就等于公开：任何人都能签出一个冒充本应用的包，用户手机上
+# 装的官方应用会被静默替换。
+#
+# 与 `key.properties` 的区别：那份是**开发**用的，口令公开、有意入库，
+# 让换机器、换设备时能直接覆盖安装；这份是**发布**用的，只配给 release
+# 构建。
+#
+# 生成一把发布密钥：
+#
+#   keytool -genkeypair -v -keystore jotit-release.jks \
+#           -keyalg RSA -keysize 2048 -validity 10000 \
+#           -alias jotit
+#
+# 别把它放在 `keystore/` 目录里——那个目录是给入库的开发密钥用的。
+
+storePassword=
+keyPassword=
+keyAlias=
+storeFile=

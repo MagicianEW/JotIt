@@ -9,11 +9,14 @@ GeneratedPluginRegistrant.java
 
 # 签名材料默认不入库。
 #
-# 例外是 JotIt 自己的那一份：它必须固定在工程里，否则每台机器签出来的
-# 包都不同，换设备时只能卸载重装（会丢笔记）。它只用于开发，口令公开，
-# 上架前必须换成自己保管的发布密钥。详见 key.properties 里的说明。
-key.properties
+# 发布密钥是**私钥**，进了版本库就等于公开：任何人都能签出一个冒充本应用
+# 的包，装到用户手机上静默顶掉官方应用。它由开发者自己保管，只在本机。
+key-release.properties
 **/*.keystore
 **/*.jks
+
+# 例外是 JotIt 自己的**开发**密钥：它必须固定在工程里，否则每台机器签出来
+# 的包都不同，换设备时只能卸载重装（会丢笔记）。它的口令是公开的，所以只
+# 配给 debug 构建——上架请用 key-release.properties（不入库）。
 !key.properties
 !keystore/jotit-dev.keystore

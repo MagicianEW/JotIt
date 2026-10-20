@@ -53,11 +53,23 @@ bash tools/run-device-test.sh <device-id> integration_test/device_mention_test.d
 
 ### Android 签名
 
-`android/key.properties` 与 `android/keystore/jotit-dev.keystore` **有意入库**。
+工程里有两份签名材料，性质完全不同：
 
-Android 的 debug 签名默认取自每台机器各自的 `~/.android/debug.keystore`，两台机器签出来的包不同 —— 装到同一台设备上会被系统以「签名不一致」拒绝，只能先卸载，而卸载会带走用户的笔记。签名固定在工程里之后，换机器、换设备都能直接覆盖安装。
+| 文件 | 用途 | 是否入库 |
+| --- | --- | --- |
+| `android/key.properties` + `android/keystore/jotit-dev.keystore` | 开发（debug 构建） | **是**，口令公开 |
+| `android/key-release.properties`（自己生成） | 发布（release 构建） | **否**，私钥 |
 
-这是**开发用**签名，口令是公开的，任何人都能用它签出冒充本应用的包。真要上架，必须换成自己保管的发布密钥，并且不要提交进版本库。
+**开发签名为什么入库**：Android 的 debug 签名默认取自每台机器各自的 `~/.android/debug.keystore`，两台机器签出来的包不同 —— 装到同一台设备上会被系统以「签名不一致」拒绝，只能先卸载，而卸载会带走用户的笔记。签名固定在工程里之后，换机器、换设备都能直接覆盖安装。
+
+**发布签名为什么必须留在外面**：密钥公开意味着任何人都能签出一个「更新」装到用户手机上，顶掉官方应用。构建脚本在缺 `key-release.properties` 时会退回开发密钥并打印警告——能装能用，但不能上架。
+
+```bash
+keytool -genkeypair -v -keystore jotit-release.jks \
+        -keyalg RSA -keysize 2048 -validity 10000 -alias jotit
+# 填好后复制成 android/key-release.properties（该文件不入库）
+```
+
 
 ## 路线
 
