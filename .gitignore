@@ -6,7 +6,9 @@ build/
 .idea/
 
 # Flutter/Dart local state
-pubspec.lock
+# pubspec.lock 有意入库：JotIt 是应用而不是 package，Windows 与 macOS 两台
+# 机器必须锁定同一套依赖版本，否则同一份代码会在另一台机器上解析出不同的
+# 次要版本，出现"这边能编、那边编不过"。
 
 # Vault data and the local WebDAV test root — never commit user content
 *.jotit.db
