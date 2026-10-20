@@ -22,5 +22,14 @@
 	     the debug build is neither sandboxed nor hardened. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- The camera, for taking a picture into a note. See the matching key in
+	     Release.entitlements for why it is here even though the debug build
+	     is neither sandboxed nor hardened. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!-- Reading a file the user picked in the open panel — the album picker.
+	     See Release.entitlements for why it is here. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
 </dict>
 </plist>

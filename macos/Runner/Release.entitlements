@@ -47,5 +47,26 @@
 	-->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!--
+	  The camera, for taking a picture into a note.
+
+	  Same reasoning as the microphone above: it is not what opens the camera
+	  today, but a missing `device.camera` entitlement under the hardened
+	  runtime makes the capture fail silently, and a build that cannot take
+	  a picture is not a build anybody notices until a user tries.
+	-->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!--
+	  Reading a file the user picked in the open panel.
+
+	  The app is not sandboxed, so this is not what lets the album picker
+	  work today. It is here for the same reason as the camera: the day the
+	  sandbox is turned on, a picker that cannot read what the user chose is
+	  a picker that does nothing, and the failure is indistinguishable from
+	  a broken app.
+	-->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
 </dict>
 </plist>

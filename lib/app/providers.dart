@@ -8,9 +8,11 @@ import 'package:path_provider/path_provider.dart';
 
 import '../data/db/note_dao.dart';
 import '../data/search/note_search.dart';
+import '../ui/camera_capture_page.dart';
 import 'clip_player.dart';
 import 'vault_locator.dart';
 import 'vault_session.dart';
+import 'photo_service.dart';
 import 'voice_recorder.dart';
 
 /// The microphone recorder.
@@ -48,6 +50,18 @@ final clipPlayerFactoryProvider = Provider<ClipPlayer Function()>((ref) {
   final inTest = !kIsWeb && Platform.environment.containsKey('FLUTTER_TEST');
   if (inTest) return () => SilentClipPlayer();
   return () => PluginClipPlayer();
+});
+
+/// 取照片的服务。
+///
+/// 拍照和选图都是平台通道，在 `flutter test` 里没有实现，所以这一层必须
+/// 可替换——和录音、播放是同一个理由。这里注入桌面端的取景页，是因为
+/// 桌面系统没有系统相机界面，那部分界面住在界面层，而这一层不该反过来
+/// 认得界面。
+final photoServiceProvider = Provider<PhotoService>((ref) {
+  return PluginPhotoService(
+    desktopCapture: (context) => CameraCapturePage.capture(context),
+  );
 });
 
 /// Resolved on startup so the first-run check has something to inspect.

@@ -20,6 +20,43 @@
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
+    <!--
+      The camera plugin is here for the *desktop* capture screen, where there
+      is no system camera app to hand the shutter to. On Android the shutter
+      goes to the system camera through image_picker instead, and the camera
+      plugin is never opened — but its manifest still lands in the merged
+      one, and it brings two things that have to be undone:
+
+      1. `android.permission.CAMERA`. Android's rule is blunt: an app that
+         declares the camera permission has to ask for it at runtime, and an
+         app that declares it and does not ask gets a SecurityException the
+         moment it tries to open the camera. Since this app deliberately
+         never asks — the system camera app holds the permission, not us —
+         the declaration has to go, or the shutter button is dead on
+         Android.
+      2. `android.hardware.camera.any`, which defaults to *required*. That
+         would take this app off the store listing for every tablet and
+         Chromebook without a camera, which is a ridiculous thing for a
+         notepad to do. The feature stays declared, but optional.
+
+      The write permission came in with the camera plugin and goes with it.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove"/>
+    <!--
+      The storage permissions came in with the same plugin. The app never
+      reads the user's photos or music on its own — the picker hands back a
+      URI it is already allowed to read — so the permission has no business
+      in the listing: on Android 13 and later it is not even grantable any
+      more, and a permission that cannot be granted is a permission the
+      store flags.
+    -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove"/>
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false"
+        tools:replace="android:required"/>
+
 
 
     <!--

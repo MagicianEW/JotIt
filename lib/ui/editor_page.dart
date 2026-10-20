@@ -22,6 +22,9 @@ import 'theme.dart';
 /// editor would mangle on save.
 enum EditorView { preview, rich, source }
 
+/// The two ways a photo can arrive.
+enum _PhotoSource { camera, library }
+
 /// The note editor.
 ///
 /// The text area shows the file verbatim, front matter included. JotIt does
@@ -93,6 +96,14 @@ class EditorPageState extends ConsumerState<EditorPage> {
 
   /// Whether a recording is in flight.
   bool _recording = false;
+
+  /// Whether a photo is being taken or chosen right now.
+  ///
+  /// The camera screen is its own page, so the editor is not visible while it
+  /// is up — but on the platforms that hand the camera to the system, the
+  /// editor *is* still there behind the system camera app, and a second tap
+  /// would start a second capture.
+  bool _takingPhoto = false;
 
   /// Ticks once a second so the elapsed time on screen moves.
   ///
@@ -244,6 +255,39 @@ class EditorPageState extends ConsumerState<EditorPage> {
               // gaining a second one beside it. A row of icons where one of
               // them changes meaning is how a user ends up recording twice —
               // and a second recording is not a thing they can undo.
+              // A photo has two sources — the camera and the album — so this is
+              // a menu and not a button. Two flat icons side by side would
+              // make the user guess which is which before they have seen
+              // either one work.
+              PopupMenuButton<_PhotoSource>(
+                key: const ValueKey('editor-photo-menu'),
+                tooltip: '插入图片',
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+                enabled: editable && !_attaching && !_takingPhoto,
+                onSelected: _addPhoto,
+                itemBuilder: (context) => const <PopupMenuEntry<_PhotoSource>>[
+                  PopupMenuItem(
+                    value: _PhotoSource.camera,
+                    child: Row(
+                      children: <Widget>[
+                        Icon(Icons.photo_camera_outlined),
+                        SizedBox(width: 12),
+                        Text('拍照'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: _PhotoSource.library,
+                    child: Row(
+                      children: <Widget>[
+                        Icon(Icons.photo_library_outlined),
+                        SizedBox(width: 12),
+                        Text('从相册选择'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
               IconButton(
                 key: const ValueKey('editor-record'),
                 icon: Icon(_recording
@@ -1095,6 +1139,44 @@ class EditorPageState extends ConsumerState<EditorPage> {
     // leave a message on screen that looks like one.
     if (picked == null) return;
     await insertFile(picked.path);
+  }
+
+  /// Takes a photo — or picks one — and puts it into the note.
+  ///
+  /// A photo is a file before it is a picture, and the vault treats it as
+  /// one: it is copied into the note's own `attachments/` folder and
+  /// referenced by a wiki link, exactly like an image the user attached by
+  /// hand. The only difference is where the file came from.
+  Future<void> _addPhoto(_PhotoSource source) async {
+    if (_writablePath() == null) {
+      setState(() => _status = '先打开一篇可编辑的笔记，再插入图片');
+      return;
+    }
+    // A second tap while the first capture is still running would open a
+    // second camera screen, and the user would have to cancel both.
+    if (_takingPhoto) return;
+
+    setState(() => _takingPhoto = true);
+    final service = ref.read(photoServiceProvider);
+    String? path;
+    try {
+      path = source == _PhotoSource.camera
+          ? await service.capturePhoto(context)
+          : await service.pickPhoto();
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _takingPhoto = false;
+        _status = '取照片失败：$e';
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _takingPhoto = false);
+    // The user backed out. That is not a failure, and it must not leave a
+    // message on screen that reads like one.
+    if (path == null) return;
+    await insertFile(path);
   }
 
   /// Starts recording a voice memo.

@@ -59,6 +59,17 @@
 	-->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>JotIt 需要使用麦克风，把你说的语音录进笔记里。</string>
+	<!--
+	  The camera, for taking a picture straight into a note.
+
+	  Same rule as the microphone: macOS 10.14 and later refuse to open the
+	  device unless the app says what it wants it for, and the refusal is
+	  silent — the shutter button simply does nothing. The prompt is the only
+	  place the user gets to decide, so it has to say the thing they can
+	  decide on: "take a picture into your note".
+	-->
+	<key>NSCameraUsageDescription</key>
+	<string>JotIt 需要使用相机，把眼前的画面拍进笔记里。</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
