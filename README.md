@@ -39,6 +39,18 @@ flutter build apk --release
 - Flutter stable 3.x；Windows 需要 VS2022 桌面工作负载，Android 需要 JDK 17 + Android SDK
 - 桌面端 SQLite 走 `sqflite_common_ffi`，Android 走原生 `sqflite`，无需额外配置
 
+### 真机测试
+
+`tools/run-device-test.sh` 是一条**不卸载设备**的链路：构建 → 覆盖安装 →
+启动 → 转发 VM service 端口 → 手写 driver 跑测试。
+
+```bash
+bash tools/run-device-test.sh <device-id> integration_test/device_mention_test.dart
+```
+
+`flutter drive` 会无条件先卸载再装，于是每跑一次测试都弹一次系统授权。覆盖安装
+不弹，但要靠工程内那份固定签名——见下节。
+
 ### Android 签名
 
 `android/key.properties` 与 `android/keystore/jotit-dev.keystore` **有意入库**。
@@ -49,9 +61,9 @@ Android 的 debug 签名默认取自每台机器各自的 `~/.android/debug.keys
 
 ## 路线
 
-- ✅ Windows 版（当前主开发平台，687 项测试全绿）
-- 🔜 macOS 版（`macos/` 骨架已就绪，迁移进行中）
-- 🔜 Android 版完善（`android/` 骨架已就绪，移动端 UI 适配进行中）
+- ✅ Windows 版（当前主开发平台，842 项测试全绿）
+- ✅ macOS 版（`macos/` 已就绪，录音 / 拍照 / 关联都在上面跑过）
+- ✅ Android 版（`android/` 已就绪，5 条真机集成测试全绿）
 - 🔜 富文本接入 `[[双链]]` 与链接按钮
 
 ## 架构一瞥
