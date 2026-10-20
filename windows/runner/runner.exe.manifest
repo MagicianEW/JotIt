@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <!-- The camera, for taking a picture straight into a note, and the
+         microphone, for recording a voice memo. A plain Win32 app is allowed
+         to open both without declaring anything — but the declaration is what
+         makes the app visible in the privacy settings the user can check, and
+         it is what a store build would have to say as well. Without it the
+         capture fails with no message at all. -->
+    <deviceCapability name="webcam"/>
+    <deviceCapability name="microphone"/>
     <windowsSettings>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
     </windowsSettings>

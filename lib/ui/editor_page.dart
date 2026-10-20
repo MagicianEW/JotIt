@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
 import '../app/vault_session.dart';
+import '../app/voice_recorder.dart';
 import '../domain/entities/markdown_parser.dart';
 import '../domain/entities/rich_note_codec.dart';
 import '../domain/vault/attachment_writer.dart';
@@ -74,6 +75,34 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// 每敲一个字都会重建。
   List<Backlink> _backlinks = const <Backlink>[];
   String? _backlinksFor;
+  /// The recorder, while a recording is in flight.
+  ///
+  /// Null the rest of the time. The recorder itself lives in a provider — it
+  /// is a device resource, and the plugin does not want one per editor — but
+  /// *this* reference is what says "a recording is happening right now", and
+  /// it is the thing the stop button acts on.
+  VoiceRecorder? _recorder;
+
+  /// Where the recording is being written.
+  ///
+  /// A temporary directory, not the vault: the recording is copied into the
+  /// vault by the same attachment path every other file takes, and the
+  /// temporary copy is deleted afterwards. A cancelled recording must leave
+  /// nothing behind.
+  RecordingWorkspace? _recordingWorkspace;
+
+  /// Whether a recording is in flight.
+  bool _recording = false;
+
+  /// Ticks once a second so the elapsed time on screen moves.
+  ///
+  /// A timer rather than a rebuild loop: the status line shows the time, and
+  /// a `setState` every frame for that is a battery cost for a number that
+  /// changes once a second.
+  Timer? _recordingTicker;
+
+  /// When the current recording started.
+  DateTime? _recordingStartedAt;
 
   /// Opened in preview, because most opens are reads, not edits.
   EditorView _view = EditorView.preview;
@@ -98,6 +127,19 @@ class EditorPageState extends ConsumerState<EditorPage> {
 
   @override
   void dispose() {
+    // A recording that is still running when the page goes away has to be
+    // stopped: the microphone stays open, and the file the platform is
+    // writing is left half-finished in the temp directory. The page cannot
+    // ask the user anything at this point, so it does the only thing that is
+    // correct — throw the recording away.
+    _recordingTicker?.cancel();
+    _recordingTicker = null;
+    final recorder = _recorder;
+    final workspace = _recordingWorkspace;
+    _recorder = null;
+    _recordingWorkspace = null;
+    if (recorder != null) unawaited(recorder.cancel());
+    if (workspace != null) unawaited(workspace.dispose());
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -143,7 +185,15 @@ class EditorPageState extends ConsumerState<EditorPage> {
             // title tracks what is actually on screen — including a jump's
             // brief reload window, where it keeps showing the old note rather
             // than mixing the new path with the old text.
-            title: _appBarTitle(_loadedPath ?? path),
+            //
+            // A note that cannot be opened has no title and no text, and the
+            // refusal page names the *current* path. The header has to name
+            // it too, or the title says A while the body says B.
+            title: _appBarTitle(
+              async.asData?.value == null && !async.isLoading
+                  ? path
+                  : (_loadedPath ?? path),
+            ),
             actions: [
               // 「谁提到了本篇」——反向关联的入口。
               //
@@ -189,6 +239,26 @@ class EditorPageState extends ConsumerState<EditorPage> {
                 icon: const Icon(Icons.attach_file),
                 tooltip: '插入附件',
                 onPressed: editable && !_attaching ? _attachFile : null,
+              ),
+              // The microphone button turns into the stop button rather than
+              // gaining a second one beside it. A row of icons where one of
+              // them changes meaning is how a user ends up recording twice —
+              // and a second recording is not a thing they can undo.
+              IconButton(
+                key: const ValueKey('editor-record'),
+                icon: Icon(_recording
+                    ? Icons.stop_circle_outlined
+                    : Icons.mic_none),
+                color: _recording ? Theme.of(context).colorScheme.error : null,
+                tooltip: _recording ? '停止录音' : '录音',
+                // While a recording is running the button stays live whatever
+                // the note is doing. Tying it to `editable` would disable the
+                // stop button the moment the note stopped being editable —
+                // and a recording the user cannot stop is a recording that
+                // keeps the microphone open until the app is closed.
+                onPressed: _recording
+                    ? _stopRecording
+                    : (editable && !_attaching ? _startRecording : null),
               ),
               IconButton(
                 icon: const Icon(Icons.save_outlined),
@@ -278,13 +348,22 @@ class EditorPageState extends ConsumerState<EditorPage> {
                   // Reading column: on a wide window a full-width paragraph
                   // is unreadable — the eye loses the line. 680 px is where
                   // 16 px text lands in the 45–75 characters-per-line band.
-                  EditorView.preview => Center(
+                  //
+                  // Top-aligned, not centred: the preview scrolls when the
+                  // note is taller than the window, and a centred column
+                  // would start halfway down the first page — the reader
+                  // opens the note and sees its middle.
+                  EditorView.preview => Align(
+                      alignment: Alignment.topCenter,
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(
                             maxWidth: JotItTokens.readingWidth),
                         child: NotePreview(
                           key: ValueKey('preview-${note.notePath}'),
                           text: _controller.text,
+                          // The path of the note on screen, so a relative link
+                          // is resolved against the note it was written in.
+                          sourcePath: note.notePath,
                           onOpenNote: _openLinkedNote,
                           onTapBlock: _locateAndEdit,
                         ),
@@ -344,6 +423,8 @@ class EditorPageState extends ConsumerState<EditorPage> {
           note: note,
           backupWarning: _backupWarning,
           onSave: _save,
+          recording: _recording,
+          onCancelRecording: _cancelRecording,
         ),
       ],
     );
@@ -427,6 +508,23 @@ class EditorPageState extends ConsumerState<EditorPage> {
 
   void _markEdited() {
     if (!_dirty) setState(() => _dirty = true);
+  }
+
+  /// Marks the note as edited **and** rebuilds the page.
+  ///
+  /// The format toolbar is reachable in preview mode, where nothing listens
+  /// to the controller — there is no `EditableText` to trigger a rebuild, and
+  /// the provider does not bump either. The rendered page therefore only
+  /// redrew when something else happened to rebuild it, which is why the
+  /// first format operation looked like it worked (it flipped [_dirty] from
+  /// false to true) and every one after it was invisible: the buffer really
+  /// changed and really got written to disk, but the screen showed the old
+  /// text the whole time.
+  ///
+  /// The rebuild is unconditional rather than tied to the dirty flag for
+  /// exactly that reason.
+  void _markEditedAndRebuild() {
+    setState(() => _dirty = true);
   }
 
   IconData _iconOf(EditorView view) => switch (view) {
@@ -548,7 +646,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
           extentOffset: end - prefix.length,
         ),
       );
-      _markEdited();
+      _markEditedAndRebuild();
       return;
     }
 
@@ -566,7 +664,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
           extentOffset: end - prefix.length - suffix.length,
         ),
       );
-      _markEdited();
+      _markEditedAndRebuild();
       return;
     }
 
@@ -580,7 +678,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
               extentOffset: end + prefix.length,
             ),
     );
-    _markEdited();
+    _markEditedAndRebuild();
   }
 
   /// `[selection](url)` with the caret on the url; `[]()` with the caret in
@@ -602,7 +700,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
           ? TextSelection.collapsed(offset: sel.start + 1)
           : TextSelection.collapsed(offset: urlOffset),
     );
-    _markEdited();
+    _markEditedAndRebuild();
   }
 
   /// The character range covering the selected lines: the line holding
@@ -654,7 +752,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
         extentOffset: bs + newBlock.length,
       ),
     );
-    _markEdited();
+    _markEditedAndRebuild();
   }
 
   /// Rotates the selected lines through 正文 → H1 → H2 → H3 → 正文.
@@ -688,7 +786,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
         extentOffset: bs + newBlock.length,
       ),
     );
-    _markEdited();
+    _markEditedAndRebuild();
   }
 
   // ------------------------------------------------ preview-tap positioning
@@ -770,7 +868,14 @@ class EditorPageState extends ConsumerState<EditorPage> {
     final path = _loadedPath;
     if (path == null) return null;
     if (path != ref.read(openNoteProvider)) return null;
-    if (ref.read(editableNoteProvider).asData?.value == null) return null;
+    // The provider is briefly loading after every save — the version bump
+    // re-runs it — and during that window there is no data to read, even
+    // though the note is perfectly editable. Refusing the save then turns a
+    // second Ctrl+S into "当前笔记不可保存": the user pressed the key twice
+    // and the app said the note cannot be saved.
+    final editable = ref.read(editableNoteProvider);
+    final value = editable.asData?.value;
+    if (value == null && !editable.isLoading) return null;
     return path;
   }
 
@@ -791,12 +896,25 @@ class EditorPageState extends ConsumerState<EditorPage> {
     _richPaneKey.currentState?.flush();
 
     final session = await ref.read(vaultProvider.future);
+    // The pairing rule, checked again because time has passed. The path was
+    // resolved *before* the wait, and a wait is a window: the vault can be
+    // reopened, a note jumped to, the provider recomputed. Writing now
+    // would put this note's text under the previous note's path — the P0-5
+    // failure, one step later.
+    if (_writablePath() != path) {
+      if (mounted) setState(() => _status = '笔记已经切换，这次没有保存');
+      return;
+    }
     try {
       final hash = _view == EditorView.rich
           ? await session.saveRich(path, _controller.text)
           : await session.save(path, _controller.text);
       if (!mounted) return;
-      invalidateNotes(ref);
+      // Only a real write invalidates. A save that changed nothing leaves
+      // the file as it was, and bumping the version anyway sends the
+      // editor's provider back to loading for no reason — which is what
+      // turned a second Ctrl+S into "当前笔记不可保存".
+      if (hash != null) invalidateNotes(ref);
       setState(() {
         _dirty = false;
         // saveRich is the only path that rolls a backup, and a no-op rich
@@ -821,7 +939,7 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// a key press has to first win a focus-tree fight that has nothing to do
   /// with saving; calling the guarded method itself is the honest equivalent.
   ///
-  /// Public for the same reason as [attachForTesting]: it is the test's entry
+  /// Public for the same reason as [insertFile]: it is the test's entry
   /// point into a flow whose only other front door is a platform channel.
   Future<void> saveForTesting() => _save();
 
@@ -976,102 +1094,155 @@ class EditorPageState extends ConsumerState<EditorPage> {
     // A cancelled dialog returns null. That is not an error and must not
     // leave a message on screen that looks like one.
     if (picked == null) return;
-    await attachForTesting(picked.path);
+    await insertFile(picked.path);
   }
 
-  /// Everything after the file has been chosen.
+  /// Starts recording a voice memo.
   ///
-  /// Split out from [_attachFile] so the whole insert — copy, reindex, splice,
-  /// caret — is reachable in a test without a platform channel standing in
-  /// the way. The picker is the only part that cannot be exercised headlessly,
-  /// and it is also the part with nothing in it to get wrong.
-  ///
-  /// Public because the test drives it directly. There is nothing for a caller
-  /// outside this file to gain by invoking it, and the alternative — mocking
-  /// `file_selector`'s pigeon channels — tests the mock.
-  Future<void> attachForTesting(String sourcePath) async {
-    // P0-5: insert against the paired path, not whatever the open-note
-    // provider happens to say — during a jump the two disagree, and the copy
-    // would be filed under a note whose text is not on screen.
-    final notePath = _writablePath();
-    if (notePath == null) {
-      setState(() => _status = '先打开一篇可编辑的笔记，再插入附件');
+  /// The microphone is asked for at the moment the button is pressed, not at
+  /// startup: a permission prompt the user cannot see the point of is a
+  /// prompt they deny, and the app is much more persuasive about it when it
+  /// explains what the recording is for.
+  Future<void> _startRecording() async {
+    // Same pairing rule as a save (P0-5): the recording is about to be
+    // referenced from the text on screen, which only belongs to a note that
+    // is actually loaded and editable.
+    if (_writablePath() == null) {
+      setState(() => _status = '先打开一篇可编辑的笔记，再录音');
+      return;
+    }
+
+    final recorder = ref.read(voiceRecorderProvider);
+
+    final bool granted;
+    try {
+      granted = await recorder.requestPermission();
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() => _status = '麦克风打不开：$e');
+      return;
+    }
+    if (!mounted) return;
+    if (!granted) {
+      setState(() => _status = '没有麦克风权限，无法录音');
+      return;
+    }
+
+    final workspace = await RecordingWorkspace.create();
+    if (!mounted) {
+      await workspace.dispose();
+      return;
+    }
+
+    try {
+      await recorder.start(path: workspace.filePath);
+    } on Object catch (e) {
+      await workspace.dispose();
+      if (!mounted) return;
+      setState(() => _status = '录音失败：$e');
+      return;
+    }
+    if (!mounted) {
+      // The page went away between the permission prompt and the recording.
+      // The microphone must not be left open.
+      await recorder.cancel();
+      await workspace.dispose();
       return;
     }
 
     setState(() {
-      _attaching = true;
-      _status = '正在插入…';
+      _recorder = recorder;
+      _recordingWorkspace = workspace;
+      _recording = true;
+      _recordingStartedAt = DateTime.now();
+      _status = '录音中 00:00';
     });
+    _recordingTicker?.cancel();
+    _recordingTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _status = '录音中 ${_recordingElapsed()}');
+    });
+  }
 
+  /// Stops the recording and puts the clip into the note.
+  Future<void> _stopRecording() async {
+    final recorder = _recorder;
+    final workspace = _recordingWorkspace;
+    _recordingTicker?.cancel();
+    _recordingTicker = null;
+    if (!mounted) return;
+    setState(() {
+      _recording = false;
+      _recorder = null;
+      _recordingWorkspace = null;
+      _status = '正在保存录音…';
+    });
+    if (recorder == null || workspace == null) return;
+
+    final String? recorded;
     try {
-      final session = await ref.read(vaultProvider.future);
-      final insertion = await session.insertAttachment(
-        notePath: notePath,
-        sourcePath: sourcePath,
-      );
-      if (!mounted) return;
-
-      // The copy is asynchronous: a wiki-link jump taken while it ran leaves
-      // the controller holding a *different* note than the one the attachment
-      // belongs to — the P0-5 pairing rule, checked again because time has
-      // passed. The copied file stays behind as an orphan, exactly as it does
-      // when the user simply never saves.
-      if (_writablePath() != notePath) {
-        setState(() {
-          _attaching = false;
-          _status = '笔记已经切换，这次插入没有链接进去';
-        });
-        return;
-      }
-
-      // The splice below edits the buffer by path and offset, so it needs the
-      // controller to hold the latest text: anything still on the rich pane's
-      // debounce is delivered first (P1-10), otherwise the insert would be
-      // layered over a stale buffer and the user's last burst rolled back.
-      _richPaneKey.currentState?.flush();
-
-      final spliced = AttachmentWriter.spliceInto(
-        _controller.text,
-        _focus.hasFocus ? _controller.selection.baseOffset : _controller.text.length,
-        insertion,
-      );
-      setState(() {
-        _controller.text = spliced;
-        // Put the caret after what was just inserted, so typing continues
-        // below the picture rather than in the middle of the link.
-        _controller.selection = TextSelection.collapsed(
-          offset: spliced.indexOf(insertion.markdown) + insertion.markdown.length,
-        );
-        _dirty = true;
-        _attaching = false;
-        if (_view == EditorView.rich && !_richAllowed) {
-          // An attachment link is `![[...]]` — wiki syntax the rich serialiser
-          // cannot round-trip, so the note may no longer be shown in rich
-          // mode. Leaving the user there would let the pane's next
-          // serialisation wipe the link that was just inserted (P1-11).
-          _view = EditorView.source;
-          _status = '附件链接暂不受富文本支持，已切回源码视图';
-        } else {
-          _status = '已插入 ${insertion.linkTarget}（${_humanSize(insertion.size)}），'
-              '保存后同步';
-        }
-      });
-      invalidateNotes(ref);
-    } on AttachmentRefused catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _attaching = false;
-        _status = '插入失败：${e.reason}';
-      });
+      recorded = await recorder.stop();
     } on Object catch (e) {
+      await workspace.dispose();
       if (!mounted) return;
-      setState(() {
-        _attaching = false;
-        _status = '插入失败：$e';
-      });
+      setState(() => _status = '录音失败：$e');
+      return;
+    }
+
+    // The platform may have named the file itself; what matters is the file
+    // that exists, not the name it was asked for. A recording that produced
+    // no file is not an error — the user stopped it before it began.
+    final file = await workspace.producedFile(preferred: recorded);
+    if (file == null) {
+      await workspace.dispose();
+      if (!mounted) return;
+      setState(() => _status = '没有录到内容');
+      return;
+    }
+
+    if (!mounted) {
+      await workspace.dispose();
+      return;
+    }
+    // The copy into the vault happens before the workspace is deleted: the
+    // file being copied *is* the workspace's file. The `finally` is what
+    // guarantees the temporary directory goes away even when the insert
+    // fails — a leftover recording in the temp folder is a file the user
+    // never asked for.
+    try {
+      await insertFile(file.path);
+    } finally {
+      await workspace.dispose();
     }
   }
+
+  /// Throws the recording away.
+  Future<void> _cancelRecording() async {
+    final recorder = _recorder;
+    final workspace = _recordingWorkspace;
+    _recordingTicker?.cancel();
+    _recordingTicker = null;
+    if (!mounted) return;
+    setState(() {
+      _recording = false;
+      _recorder = null;
+      _recordingWorkspace = null;
+      _status = '已取消录音';
+    });
+    if (recorder != null) await recorder.cancel();
+    if (workspace != null) await workspace.dispose();
+  }
+
+  /// `mm:ss` of how long the current recording has been running.
+  String _recordingElapsed() {
+    final started = _recordingStartedAt;
+    if (started == null) return '00:00';
+    final total = DateTime.now().difference(started).inSeconds;
+    final m = total ~/ 60;
+    final s = total % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
 
   static String _humanSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
@@ -1106,6 +1277,8 @@ class _StatusBar extends StatelessWidget {
     this.note,
     this.backupWarning,
     required this.onSave,
+    this.recording = false,
+    this.onCancelRecording,
   });
 
   final String? status;
@@ -1118,6 +1291,14 @@ class _StatusBar extends StatelessWidget {
   final String? backupWarning;
 
   final Future<void> Function() onSave;
+
+  /// Whether a recording is in flight. The bar grows a cancel button while
+  /// it is — a recording the user cannot stop is a recording they have to
+  /// close the app to end, and the microphone keeps running after the window
+  /// goes away.
+  final bool recording;
+
+  final Future<void> Function()? onCancelRecording;
 
   @override
   Widget build(BuildContext context) {
@@ -1156,6 +1337,19 @@ class _StatusBar extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (recording && onCancelRecording != null)
+                TextButton(
+                  key: const ValueKey('editor-cancel-recording'),
+                  onPressed: onCancelRecording,
+                  style: TextButton.styleFrom(
+                    textStyle: theme.textTheme.labelSmall,
+                    visualDensity: VisualDensity.compact,
+                    minimumSize: const Size(0, 28),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    foregroundColor: theme.colorScheme.error,
+                  ),
+                  child: const Text('取消录音'),
+                ),
               if (note != null && !note!.hasUid)
                 TextButton(
                   onPressed: onSave,

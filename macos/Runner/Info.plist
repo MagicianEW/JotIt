@@ -47,6 +47,18 @@
 	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
+	<!--
+	  The microphone, for recording a voice memo into a note.
+
+	  macOS 10.14 and later refuse to open an input device unless the app says
+	  what it wants the microphone for, and the refusal is a silent one: the
+	  record button simply does nothing. This string is what the system shows
+	  in the consent prompt, so it has to say the thing a person can decide
+	  on — "record a voice memo into your notes" — rather than name a
+	  permission.
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JotIt 需要使用麦克风，把你说的语音录进笔记里。</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>

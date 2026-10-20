@@ -17,5 +17,10 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- The microphone, for recording a voice memo into a note. See the
+	     matching key in Release.entitlements for why it is here even though
+	     the debug build is neither sandboxed nor hardened. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

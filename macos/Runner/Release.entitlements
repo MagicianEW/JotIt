@@ -34,5 +34,18 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!--
+	  The microphone, for recording a voice memo into a note.
+
+	  The app is not sandboxed and the hardened runtime is not enabled, so
+	  this entitlement is not what opens the microphone today — the usage
+	  description in Info.plist is. It is here anyway, because the moment the
+	  hardened runtime is turned on (which is what a notarised, distributable
+	  build needs) a missing `device.audio-input` entitlement makes the
+	  recording fail with no message at all. A build that cannot record is
+	  not a build anybody notices until a user tries.
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

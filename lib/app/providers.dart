@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -69,7 +68,12 @@ final vaultLocatorProvider = FutureProvider<VaultLocator>((ref) async {
 final vaultProvider = FutureProvider<VaultSession>((ref) async {
   final locator = await ref.watch(vaultLocatorProvider.future);
   final root = (await locator.resolve()).path;
-  final session = await VaultSession.open(root);
+  // The profile directory comes from the locator rather than being resolved
+  // again inside the session: in the app they are the same directory, but a
+  // test that points the locator at a temp directory would otherwise have
+  // the credential cipher write its master key into the *real* profile
+  // directory of the machine running the test.
+  final session = await VaultSession.open(root, appDataDir: locator.appSupportDir);
   ref.onDispose(session.close);
   return session;
 });
@@ -125,7 +129,10 @@ final noteListProvider = FutureProvider<NoteListState>((ref) async {
   ref.watch(notesVersionProvider);
   final dao = session.notes;
   return NoteListState(
-    notes: await dao.allActive(limit: 500),
+    // The shelf renders one line per note, so the list only needs the first
+    // line of each body. The full text of 500 notes is megabytes crossing a
+    // platform channel to fill 500 one-line excerpts.
+    notes: await dao.allActiveExcerpts(limit: 500),
     total: await dao.countActive(),
   );
 });

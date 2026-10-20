@@ -1,10 +1,26 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- WebDAV, and nothing else. Without this in *main* rather than *debug*
          the app builds, installs, opens a note, and then fails every sync
          with a socket error that looks like the server is down.
          JotIt talks to one server that the user configures; it has no
          analytics, no ads, and no other network use. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!--
+      The microphone, for recording a voice memo into a note.
+
+      In *main*, not in a debug-only manifest, for the same reason as the
+      INTERNET permission above: a permission that is missing from the
+      release build produces an app that installs, opens a note, and then
+      cannot record — with a denial that says nothing about which permission
+      was missing. The prompt itself is asked for at runtime, in the
+      editor, the first time the record button is used; this line only
+      declares that the app is allowed to ask.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+
 
     <!--
       Backup is off, on purpose, and this is the one Android decision here

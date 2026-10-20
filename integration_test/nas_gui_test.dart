@@ -108,7 +108,6 @@ void main() {
       // duplicate global keys, and the save that follows silently does
       // nothing.
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('editor-body')), findsOneWidget);
       expect(find.byKey(const ValueKey('new-note-title')), findsNothing);
 
       final notePath = p.join(vaultRoot.path, 'notes', '$noteName.md');
@@ -119,6 +118,8 @@ void main() {
       // preservation of its conventions can be checked afterwards.
       final before = await File(notePath).readAsString();
       final wasCrlf = before.contains('\r\n');
+
+      await _toSourceView(tester);
 
       await tester.enterText(find.byKey(const ValueKey('editor-body')), body);
 
@@ -191,6 +192,18 @@ void main() {
       // page's standing labels — "冲突副本" and "没有未解决的冲突" — and fails
       // on a run where nothing whatsoever went wrong.
       expect(find.textContaining('冲突，两份都留在'), findsNothing);
+
+      // The conflicts live under 待处理, which is below the fold of a
+      // settings list. A `ListView` builds only the children it has shown,
+      // so that section's text is not in the tree until the page is scrolled
+      // to it — and a person checking for conflicts scrolls there, so the
+      // test does too.
+      await tester.scrollUntilVisible(
+        find.text('待处理'),
+        120,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
       expect(find.text('没有未解决的冲突'), findsOneWidget);
 
       // And the server really has the bytes, read back over HTTP.
@@ -273,13 +286,13 @@ void main() {
           find.byKey(const ValueKey('new-note-title')), noteName);
       await tester.tap(find.text('创建'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('editor-body')), findsOneWidget);
+      await _toSourceView(tester);
 
       // The picker is the only part that needs a platform channel, and its
       // body is empty of anything to get wrong — everything after it is what
       // this test is for.
       final state = tester.state<EditorPageState>(find.byType(EditorPage));
-      await state.attachForTesting(source.path);
+      await state.insertFile(source.path);
       await tester.pumpAndSettle();
 
       final attachmentsDir =
@@ -372,6 +385,41 @@ void main() {
     timeout: const Timeout(Duration(minutes: 20)),
     skip: !configured,
   );
+}
+
+/// Switches the editor to the source view, the way a person does.
+///
+/// The editor opens in the *preview* view — v3.0 made the rendered page the
+/// default — and the field these tests type into only exists in the source
+/// view. This file was written when the source view was the default, and
+/// since the rich-text editor landed it has been failing on `editor-body`
+/// before it ever reached the server: the failure pointed at the editor,
+/// and the thing that was actually wrong was a test that had gone stale.
+///
+/// Switching through the view menu is both the fix and the path a user
+/// takes, so the test takes it too.
+Future<void> _toSourceView(WidgetTester tester) async {
+  // The view menu is disabled while the note is still loading, and tapping a
+  // disabled button does nothing at all — so the wait is not cosmetic.
+  final deadline = DateTime.now().add(const Duration(seconds: 20));
+  while (true) {
+    final menu = tester.widget<PopupMenuButton<EditorView>>(
+        find.byKey(const ValueKey('editor-view-menu')));
+    if (menu.enabled) break;
+    if (DateTime.now().isAfter(deadline)) {
+      fail('the view menu never became enabled — the note never loaded');
+    }
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+
+  await tester.tap(find.byKey(const ValueKey('editor-view-menu')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('源码'));
+  await tester.pumpAndSettle();
+
+  expect(find.byKey(const ValueKey('editor-body')), findsOneWidget,
+      reason: 'the source field has to be in the tree for the test to type '
+          'into it');
 }
 
 /// Pumps until any one of [needles] appears as the text of some widget.

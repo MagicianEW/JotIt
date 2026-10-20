@@ -55,6 +55,9 @@ dependencies:
   file_selector: ^1.1.0
   flutter_markdown_plus: ^1.0.12
   super_editor: 0.3.0-dev.52
+  record: ^7.1.2
+  audioplayers: ^6.8.1
+  sqlite3_flutter_libs: ^0.6.0+eol
 
 dev_dependencies:
   flutter_test:
