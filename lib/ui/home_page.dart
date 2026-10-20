@@ -418,11 +418,15 @@ class _NoteTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final title = note.title.trim().isEmpty ? note.path : note.title;
+    // 正文第一行常常就是标题，这是 Markdown 笔记的常态。这时候摘要和标题一字
+    // 不差，两行并排看着像渲染坏了——所以只留时间。
+    final excerpt = _excerpt(note.body);
     final subtitle = showPath
         ? note.path
-        : <String>[_excerpt(note.body), _relativeTime(note.updatedAt)]
-            .where((s) => s.isNotEmpty)
-            .join(' · ');
+        : <String>[
+            if (excerpt.isNotEmpty && excerpt != title.trim()) excerpt,
+            _relativeTime(note.updatedAt),
+          ].where((s) => s.isNotEmpty).join(' · ');
     return _ShelfCard(
       icon: Icons.description_outlined,
       title: title,
