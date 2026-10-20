@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
@@ -6,8 +9,47 @@ import 'package:path_provider/path_provider.dart';
 
 import '../data/db/note_dao.dart';
 import '../data/search/note_search.dart';
+import 'clip_player.dart';
 import 'vault_locator.dart';
 import 'vault_session.dart';
+import 'voice_recorder.dart';
+
+/// The microphone recorder.
+///
+/// One for the whole app, not one per editor: the recorder holds a device
+/// resource, and a second one while the first is still open is a second
+/// microphone session the platform will refuse.
+///
+/// A plain `Provider` and not an `autoDispose` one. A recorder that is
+/// disposed the moment the editor stops watching it would take the platform
+/// session down with it — and the recording is not finished at that point:
+/// the stop button lives on the same page.
+final voiceRecorderProvider = Provider<VoiceRecorder>((ref) {
+  final recorder = PluginVoiceRecorder();
+  ref.onDispose(() {
+    unawaited(recorder.dispose());
+  });
+  return recorder;
+});
+
+/// Builds the player for one recorded clip.
+///
+/// A provider rather than a direct call, for the same reason the recorder is
+/// one: the player is a platform channel, and a preview that cannot be built
+/// without one cannot be tested. The factory is a *factory* because a clip
+/// owns its player — one preview showing three clips needs three of them.
+///
+/// Inside `flutter test` the default is a silent player. The real one keeps a
+/// periodic timer alive for as long as it exists, and a widget test refuses
+/// to finish while a timer is pending — so a test that renders a clip would
+/// hang for its whole timeout instead of failing. A test that wants to drive
+/// a clip overrides this with a fake, which is also the only way to say what
+/// the clip did.
+final clipPlayerFactoryProvider = Provider<ClipPlayer Function()>((ref) {
+  final inTest = !kIsWeb && Platform.environment.containsKey('FLUTTER_TEST');
+  if (inTest) return () => SilentClipPlayer();
+  return () => PluginClipPlayer();
+});
 
 /// Resolved on startup so the first-run check has something to inspect.
 ///
