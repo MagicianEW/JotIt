@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The pine plate the paper sits on. A gradient, because the cut-out in the
+     foreground lets this show through the J — a flat colour would make the
+     hole look like a sticker. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:startColor="#3E7154"
+        android:endColor="#234734"
+        android:angle="315" />
+</shape>

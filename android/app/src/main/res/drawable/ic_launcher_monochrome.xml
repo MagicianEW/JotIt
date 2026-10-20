@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The themed icon's silhouette: the J, and only the J. The system tints
+     whatever it finds here, so this has to be one flat shape. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M66.2 31.1 L66.2 67.3 Q66.2 78.1 55.5 78.1 L51.2 78.1 Q41.8 78.1 41.8 68.2 L41.8 61.1"
+        android:strokeColor="#000000"
+        android:strokeWidth="10.973"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
