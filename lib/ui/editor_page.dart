@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,7 +10,9 @@ import '../app/vault_session.dart';
 import '../domain/entities/markdown_parser.dart';
 import '../domain/entities/rich_note_codec.dart';
 import '../domain/vault/attachment_writer.dart';
+import '../domain/vault/mention_index.dart';
 import 'note_preview.dart';
+import 'related_notes_panel.dart';
 import 'rich_editor.dart';
 import 'theme.dart';
 
@@ -61,6 +65,16 @@ class EditorPageState extends ConsumerState<EditorPage> {
   bool _dirty = false;
   bool _attaching = false;
 
+  /// 提到本篇的笔记（反向关联），以及它属于哪一篇。
+  ///
+  /// 跟着 [openNoteProvider] 一起换：换了笔记，旧的反链就是**别的笔记**
+  /// 的反链了，留着比清空更糟——用户会以为那是新笔记的反链。
+  ///
+  /// 算好的结果存在这里而不是每次重建时重算：反查要扫全库正文，而编辑器
+  /// 每敲一个字都会重建。
+  List<Backlink> _backlinks = const <Backlink>[];
+  String? _backlinksFor;
+
   /// Opened in preview, because most opens are reads, not edits.
   EditorView _view = EditorView.preview;
 
@@ -87,6 +101,11 @@ class EditorPageState extends ConsumerState<EditorPage> {
     _controller.dispose();
     _focus.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
   }
 
   @override
@@ -126,6 +145,17 @@ class EditorPageState extends ConsumerState<EditorPage> {
             // than mixing the new path with the old text.
             title: _appBarTitle(_loadedPath ?? path),
             actions: [
+              // 「谁提到了本篇」——反向关联的入口。
+              //
+              // 放在视图菜单旁边而不是塞进状态栏：状态栏是给机器细节
+              // （uid、BOM、CRLF）看的，而这是一个要看的东西。图标上的
+              // 数字是提到本篇的笔记数，用户不用点开就知道有没有。
+              IconButton(
+                key: const ValueKey('editor-related-notes'),
+                tooltip: '提到本篇的笔记',
+                icon: _relatedNotesIcon(),
+                onPressed: editable ? _showRelatedNotes : null,
+              ),
               PopupMenuButton<EditorView>(
                 key: const ValueKey('editor-view-menu'),
                 tooltip: '切换视图',
@@ -801,6 +831,43 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// Every failure here says what went wrong, because the alternative — a
   /// button that does nothing when there is no note, or a refused path, or a
   /// missing plugin — is indistinguishable to the user from a broken app.
+  /// 算「谁提到了本篇」。
+  ///
+  /// 扫全库正文，慢。**只在用户真的要看的时候才算**——打开一篇笔记就
+  /// 扫一遍全库，是把一次明确的点击换成一次没人要求的等待。
+  Future<void> _loadBacklinks(String path) async {
+    // 先记下算的是哪一篇：算的途中用户又跳走了，结果回来时才知道该扔掉。
+    _backlinksFor = path;
+    final session = await ref.read(vaultProvider.future);
+    final backlinks = await session.loadBacklinks(path);
+    if (!mounted || _backlinksFor != path) return;
+    setState(() => _backlinks = backlinks);
+  }
+
+  /// 应用栏上的图标：提到本篇的笔记。
+  ///
+  /// 没有角标数字：数字要靠预先算一遍才有，而预先算一遍正是上面
+  /// 刻意不做的事。用户点开面板就看到了。
+  Widget _relatedNotesIcon() {
+    return const Icon(Icons.hub_outlined);
+  }
+
+  /// 打开「提到本篇的笔记」面板。
+  ///
+  /// 面板里点一条就跳到那篇笔记——和预览里点自动提及出来的链接一样，
+  /// 换的是笔记，不是开一个新页面。
+  Future<void> _showRelatedNotes() async {
+    final path = _loadedPath ?? ref.read(openNoteProvider);
+    if (path == null) return;
+    if (_backlinksFor != path) await _loadBacklinks(path);
+    if (!mounted) return;
+    await showRelatedNotesPanel(
+      context,
+      backlinks: _backlinks,
+      onOpen: _openLinkedNote,
+    );
+  }
+
   Future<void> insertFile(String sourcePath) async {
     // P0-5: insert against the paired path, not whatever the open-note
     // provider happens to say — during a jump the two disagree, and the copy

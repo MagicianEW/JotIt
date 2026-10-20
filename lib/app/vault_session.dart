@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common/sqlite_api.dart';
@@ -21,6 +22,7 @@ import '../data/vault/note_file_store.dart';
 import '../domain/entities/front_matter_patcher.dart';
 import '../domain/vault/attachment_writer.dart';
 import '../domain/vault/link_resolver.dart';
+import '../domain/vault/mention_index.dart';
 import '../domain/vault/vault_scanner.dart';
 import 'app_lock.dart';
 import 'credential_cipher.dart';
@@ -88,6 +90,7 @@ class VaultSession {
     Directory? appDataDir,
     ScreenSecurity? screenSecurity,
     NoteFileStore? files,
+    DatabaseFactory? databaseFactory,
   }) async {
     await NoteFileStore.ensureLayout(vaultRoot);
     // 启动恢复先于首次 reindex：上次写入中途被杀会留下
@@ -97,6 +100,7 @@ class VaultSession {
     await NoteFileStore.recoverInterruptedWrites(vaultRoot);
     final database = await JotItDatabase.open(
       filePath: p.join(VaultPaths.appRoot(vaultRoot), 'jotit.db'),
+      factory: databaseFactory,
     );
     final fileStore = files ?? NoteFileStore(vaultRoot: vaultRoot);
     final session = VaultSession._(
@@ -144,6 +148,56 @@ class VaultSession {
   /// never wrong bytes.
   Future<LinkIndex> loadLinkIndex() =>
       VaultScanner(database: db, fileStore: files).loadLinkIndex();
+
+  /// The notes that can be mentioned from anywhere, and under which names.
+  ///
+  /// Same one-query shape as [loadLinkIndex], and the same reason: the
+  /// preview reads this every time it opens, and the alternative is a query
+  /// per note. The index is derived — nothing here is written back to the
+  /// vault, so a note's text is exactly what its author left there.
+  Future<MentionIndex> loadMentionIndex() =>
+      VaultScanner(database: db, fileStore: files).loadMentionIndex();
+
+  /// 提到 [notePath] 的那些笔记（反向关联）。
+  ///
+  /// 和 [loadMentionIndex] 一样是派生数据：读索引，不写文件。
+  ///
+  /// 扫描放在后台 isolate：反查要过一遍全库正文，在界面上做会让 App
+  /// 卡住——用户点了一下，整个界面就冻住，而这只是一个他还没决定要不要
+  /// 看的列表。
+  Future<List<Backlink>> loadBacklinks(String notePath) async {
+    final index = await loadMentionIndex();
+    MentionTarget? target;
+    for (final t in index.targets) {
+      if (t.path == notePath) {
+        target = t;
+        break;
+      }
+    }
+    if (target == null) return const <Backlink>[];
+
+    final rows = await db.query(
+      'notes',
+      columns: <String>['path', 'title', 'body'],
+      where: 'is_deleted = 0',
+    );
+    final bodies = <String, String>{};
+    final titles = <String, String>{};
+    for (final row in rows) {
+      final path = row['path']! as String;
+      bodies[path] = (row['body'] as String?) ?? '';
+      titles[path] = (row['title'] as String?) ?? '';
+    }
+    return compute(
+      _findBacklinksOnIsolate,
+      _BacklinkRequest(
+        target: target,
+        bodies: bodies,
+        titles: titles,
+        allTargets: index.targets,
+      ),
+    );
+  }
 
   /// Inserts a file into the vault as an attachment of [notePath] (v3.0 §9.3)
   /// and reindexes so the new file is known immediately.
@@ -439,6 +493,34 @@ class VaultSession {
   static String _safeFileName(String raw) =>
       VaultPaths.sanitizeFileName(raw.replaceAll(RegExp(r'[\\/]'), '_'));
 }
+
+/// 一条反查请求：整个反查要用的东西，一次性打包带走。
+///
+/// 打包而不是逐个传参，是因为 `compute` 只接受**一个**可序列化的参数。
+class _BacklinkRequest {
+  const _BacklinkRequest({
+    required this.target,
+    required this.bodies,
+    required this.titles,
+    required this.allTargets,
+  });
+
+  final MentionTarget target;
+  final Map<String, String> bodies;
+  final Map<String, String> titles;
+  final List<MentionTarget> allTargets;
+}
+
+/// 反查在后台 isolate 里的入口。
+///
+/// 顶层函数，不能是闭包——`compute` 要能把它序列化到另一个 isolate 上。
+List<Backlink> _findBacklinksOnIsolate(_BacklinkRequest request) =>
+    MentionIndex.findBacklinksIn(
+      target: request.target,
+      bodies: request.bodies,
+      titles: request.titles,
+      allTargets: request.allTargets,
+    );
 
 /// One configured remote plus the objects needed to run a round against it.
 class SyncHandle {

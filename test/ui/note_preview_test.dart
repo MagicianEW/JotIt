@@ -6,8 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jotit/app/providers.dart';
 import 'package:jotit/app/vault_session.dart';
+import 'package:jotit/domain/vault/mention_index.dart';
 import 'package:jotit/ui/editor_page.dart';
 import 'package:jotit/ui/note_preview.dart';
+
+import '../support/link_tap.dart';
 import 'package:path/path.dart' as p;
 
 /// The preview: what renders, what hides, and what is clickable.
@@ -28,6 +31,16 @@ class _FixedNote extends OpenNote {
   String? build() => path;
 }
 
+/// 一篇可以被提到的笔记，和一个只含它的索引。
+final MentionIndex _mentions = MentionIndex(const <MentionTarget>[
+  MentionTarget(
+    path: 'notes/录音.md',
+    uid: 'u-rec',
+    title: '录音',
+    stem: '录音',
+  ),
+]);
+
 void main() {
   group('renderableBody (pure)', () {
     test('hides the front matter, keeps the body', () {
@@ -43,6 +56,32 @@ void main() {
       expect(out, contains('![img.png](jotit-embed:img.png)'));
       expect(out, contains('[别名](jotit-note:b)'));
       expect(out, isNot(contains('[[a]]')));
+    });
+
+    test('正文里提到另一篇笔记的标题，那几个字渲染成链接', () {
+      final out = renderableBody(
+        '这里提到录音这个功能。',
+        mentions: _mentions,
+        sourcePath: 'notes/a.md',
+      );
+      expect(out, contains('[录音](jotit-note:'),
+          reason: '显示的是用户写的那两个字，指向的是那篇笔记');
+      expect(out, contains(Uri.encodeComponent('notes/录音.md')));
+    });
+
+    test('用户自己写的链接不再被当成一次提及', () {
+      final out = renderableBody(
+        '见 [[录音]] 这篇。',
+        mentions: _mentions,
+        sourcePath: 'notes/a.md',
+      );
+      expect('jotit-note:'.allMatches(out).length, 1,
+          reason: '同一个字只能链一次，否则用户写的链接里会再套一个链接');
+    });
+
+    test('没有索引时正文一个字都不改', () {
+      final out = renderableBody('这里提到录音这个功能。');
+      expect(out, contains('这里提到录音这个功能。'));
     });
 
     test('anchor renders in the label but not the href', () {
@@ -155,7 +194,8 @@ void main() {
         for (var i = 0;
             i < 40 &&
                 find
-                    .byKey(const ValueKey('md-index-true-root-true'))
+                    .byKey(const ValueKey(
+                        'md-index-true-mentions-true-root-true'))
                     .evaluate()
                     .isEmpty;
             i++) {
@@ -192,6 +232,31 @@ void main() {
       expect(find.byType(Image), findsOneWidget);
     });
 
+    testWidgets('a HEIC photo renders as an image, not as a file the app '
+        'cannot show', (tester) async {
+      // HEIC is what a phone hands over by default, and the attachment
+      // policy already knows the type. A preview that refused it would make
+      // the app look like it had lost the picture. The bytes are a PNG on
+      // purpose: what is under test is the *extension* being recognised as
+      // a picture, not the HEIC decoder.
+      final heic = File(p.join(root.path, 'notes', 'attachments', 'pic.heic'));
+      heic.writeAsBytesSync(png);
+      await tester.runAsync(() async {
+        await vault.writeRaw(
+          'notes/a.md',
+          utf8.encode(
+              '---\nuid: u-a\ntitle: A\n---\n\n嵌图：![[attachments/pic.heic]]\n'),
+        );
+        await vault.reindex();
+      });
+
+      await openEditor(tester);
+
+      expect(find.byType(Image), findsOneWidget,
+          reason: 'a HEIC is a picture: the preview has to try to show it '
+              'instead of saying the file cannot be displayed');
+    });
+
     testWidgets('tapping a wiki link jumps to the resolved note',
         (tester) async {
       await openEditor(tester);
@@ -206,6 +271,37 @@ void main() {
       // to the filename stem — never the file name itself.
       expect(find.widgetWithText(AppBar, 'b'), findsOneWidget,
           reason: 'the editor now shows the resolved target');
+    });
+
+    testWidgets('正文里提到另一篇笔记的标题，那几个字点得动', (tester) async {
+      await tester.runAsync(() async {
+        await vault.writeRaw(
+          'notes/录音.md',
+          utf8.encode('---\nuid: u-rec\ntitle: 录音\n---\n\n录音这篇的内容。\n'),
+        );
+        await vault.writeRaw(
+          'notes/a.md',
+          utf8.encode(
+              '---\nuid: u-a\ntitle: A\n---\n\n先写第一段。\n\n这里提到了录音这个功能。\n'),
+        );
+        await vault.reindex();
+      });
+
+      await openEditor(tester);
+      await waitForIndexLoaded(tester);
+
+      final paragraph = find.textContaining('这里提到了');
+      expect(paragraph, findsOneWidget);
+
+      final offset = linkOffset(tester, paragraph, '录音');
+      expect(offset, isNotNull,
+          reason: '「录音」这两个字应该被渲染成可点的链接');
+
+      await tester.tapAt(offset!);
+      await settle(tester);
+
+      expect(find.widgetWithText(AppBar, '录音'), findsOneWidget,
+          reason: '点自动关联出来的词，应该跳到那篇笔记');
     });
 
     testWidgets('tapping a dangling link explains instead of navigating',
@@ -293,6 +389,72 @@ void main() {
       expect(find.byIcon(Icons.format_bold), findsOneWidget,
           reason: 'the toolbar is the editing surface of the rendered page; '
               'hiding it would force a manual mode switch for every fix');
+    });
+
+    testWidgets('a long note scrolls, and keeps its ends', (tester) async {
+      // P1-1: the reading surface used to be a `MarkdownBody` — a widget
+      // that explicitly does not scroll — inside a `Center`, so a note
+      // taller than the window was cropped at both ends and could not be
+      // read past the middle. The whole point of the preview is to read a
+      // long note.
+      final long = StringBuffer('---\nuid: u-a\ntitle: A\n---\n\n');
+      for (var i = 0; i < 60; i++) {
+        long.writeln('第 $i 段\n');
+      }
+      long.writeln('最后一行\n');
+      // A disk write inside a widget test has to happen on the real clock,
+      // or the continuation is queued in the fake zone and never arrives.
+      await tester.runAsync(() async {
+        await vault.writeRaw('notes/a.md', utf8.encode(long.toString()));
+        await vault.reindex();
+      });
+
+      await openEditor(tester);
+
+      final scroller = find.descendant(
+        of: find.byType(NotePreview),
+        matching: find.byType(Scrollable),
+      );
+      expect(scroller, findsOneWidget,
+          reason: 'the reading surface has to scroll');
+      final state = tester.state<ScrollableState>(scroller);
+      expect(state.position.maxScrollExtent, greaterThan(0),
+          reason: 'a long note is taller than the window');
+
+      await tester.drag(scroller, const Offset(0, -600));
+      await settle(tester);
+
+      expect(state.position.pixels, greaterThan(0),
+          reason: 'the note moves under the finger');
+      expect(find.text('最后一行'), findsOneWidget,
+          reason: 'the end of the note is reachable');
+    });
+
+    testWidgets('a format action in preview mode is visible on the page',
+        (tester) async {
+      // P1-2: the preview has no text field to listen to, and the provider
+      // does not move, so a format action that only wrote the controller
+      // changed the buffer without anything on screen following. The first
+      // action rebuilt the page by accident (it flipped the dirty flag);
+      // every action after it did not — so the button looked dead, and the
+      // invisible change was still written to disk.
+      await openEditor(tester);
+
+      String pageText() =>
+          tester.widget<NotePreview>(find.byType(NotePreview)).text;
+
+      final before = pageText();
+      await tester.tap(find.byIcon(Icons.format_bold));
+      await settle(tester);
+      final afterBold = pageText();
+      expect(afterBold, isNot(before),
+          reason: 'the first action reaches the page');
+
+      await tester.tap(find.byIcon(Icons.format_italic));
+      await settle(tester);
+      final afterItalic = pageText();
+      expect(afterItalic, isNot(afterBold),
+          reason: 'and so does the second one — only a rebuild can carry it');
     });
   });
 }

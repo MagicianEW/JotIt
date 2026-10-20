@@ -14,6 +14,7 @@ import '../entities/markdown_parser.dart';
 import '../entities/parsed_note.dart';
 import '../sync/attachment_policy.dart';
 import 'link_resolver.dart';
+import 'mention_index.dart';
 
 /// What one pass of [VaultScanner.reindex] found.
 ///
@@ -316,6 +317,80 @@ class VaultScanner {
     await dao.runInTransaction((txn) async {
       final tnotes = NoteDao.on(txn);
 
+      // 2a-0 — the notes that changed path.
+      //
+      // A note keeps its identity when it moves: the uid lives in the front
+      // matter, the path does not. The index row has to follow it, and it has
+      // to *move* rather than be deleted and re-created — a delete cascades
+      // through `links`, `link_aliases` and `note_tags`, and the aliases are
+      // the user's own disambiguation decisions. Losing them because a file
+      // was moved in the file manager is silent and permanent.
+      //
+      // The moves happen before any row is written, and a note that has to
+      // leave a path is moved out of it first, so a note moving into the
+      // path another note is leaving cannot delete it on the way.
+      final moves = <String, String>{}; // uid -> the path it now lives at
+      final leftBehind = <String, String>{}; // uid -> the path it lived at
+      final indexedByUid = await tnotes.pathsByUid();
+      for (final path in parsed.keys) {
+        final uid = parsed[path]!.parsed.uid!;
+        final oldPath = indexedByUid[uid];
+        if (oldPath == null || oldPath == path) continue;
+        moves[uid] = path;
+        leftBehind[uid] = oldPath;
+      }
+
+      for (final uid in moves.keys.toList()..sort()) {
+        final newPath = moves[uid]!;
+        final occupant = await tnotes.byPath(newPath, includeDeleted: true);
+        if (occupant != null && occupant.uid != uid) {
+          if (moves.containsKey(occupant.uid)) {
+            // The occupant is moving as well — two notes swapping names.
+            // It is parked on a path nothing can be on until its own move
+            // puts it where it belongs, so neither note loses its rows to
+            // the other.
+            await tnotes.moveTo(
+              uid: occupant.uid,
+              path: 'notes/.jotit-relocating-${_uuid.v4()}',
+            );
+          } else {
+            // The occupant is gone: the file at that path holds a different
+            // identity now and nothing on disk claims the old one. Its row
+            // goes with it, aliases included — an alias whose note no longer
+            // exists is dropped by the reader anyway.
+            await tnotes.purge(occupant.path);
+          }
+        }
+        await tnotes.moveTo(uid: uid, path: newPath);
+      }
+
+      // A tombstone at the path each moved note left behind. This is what
+      // makes the rename reach the server instead of being undone by it:
+      // the engine reads the tombstone as "this device no longer has a note
+      // here" and propagates the deletion, rather than downloading the
+      // server's old copy back over the moved note.
+      //
+      // A path that another note has taken over in the meantime gets no
+      // tombstone: `notes.path` is unique, and a tombstone there would keep
+      // the new note out of the index.
+      //
+      // A path whose file is still on disk gets none either. That is a
+      // second file carrying the same uid — a duplicate, not a move — and
+      // the note did not leave; the index simply follows the other one. A
+      // tombstone there would tell the sync engine the file was deleted,
+      // and the server's copy of the duplicate would be deleted with it.
+      for (final uid in moves.keys) {
+        final oldPath = leftBehind[uid]!;
+        if (parsed.containsKey(oldPath)) continue;
+        final file = _files.fileFor(oldPath);
+        if (file != null && await file.exists()) continue;
+        await tnotes.leaveTombstone(
+          path: oldPath,
+          uid: uid,
+          at: _now().millisecondsSinceEpoch,
+        );
+      }
+
       // 2a — every note row, before any link row.
       //
       // `links.target_note_id` is a real foreign key, so a note that links to
@@ -513,6 +588,29 @@ class VaultScanner {
       byStem: byStem,
       aliases: await _loadAliases(),
     );
+  }
+
+  /// The notes that can be mentioned, and under which names.
+  ///
+  /// One query, like [loadLinkIndex] — this is read on every preview open,
+  /// and a query per note would turn a 1000-note vault into 1000 queries.
+  Future<MentionIndex> loadMentionIndex() async {
+    final rows = await _db.query(
+      'notes',
+      columns: <String>['id', 'path', 'title'],
+      where: 'is_deleted = 0',
+    );
+    final targets = <MentionTarget>[];
+    for (final row in rows) {
+      final path = row['path']! as String;
+      targets.add(MentionTarget(
+        path: path,
+        uid: row['id']! as String,
+        title: (row['title'] as String?) ?? '',
+        stem: LinkIndex.stemOf(path),
+      ));
+    }
+    return MentionIndex(targets);
   }
 
   LinkIndex _buildLinkIndex(
