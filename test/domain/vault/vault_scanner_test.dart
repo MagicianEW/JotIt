@@ -403,6 +403,101 @@ void main() {
     });
   });
 
+  group('a note that changed path (P1-6)', () {
+    test('the row moves with the note and the disambiguation survives',
+        () async {
+      // The file manager is the only rename path the app has. The identity
+      // travels in the front matter, the path does not, so the index row has
+      // to follow the file — and it has to *move* rather than be deleted and
+      // re-created: a delete cascades through `link_aliases`, and those are
+      // the user's own decisions.
+      await writeNote('notes/a.md', 'body', uid: 'u-a', title: 'A');
+      await writeNote('notes/b.md', 'body', uid: 'u-b', title: 'B');
+
+      final db = await openDb();
+      addTearDown(db.close);
+      final scanner = VaultScanner(database: db.db, fileStore: store);
+      await scanner.reindex();
+
+      await db.db.insert('link_aliases', <String, Object?>{
+        'source_note_id': 'u-a',
+        'alias': '同名',
+        'target_note_id': 'u-b',
+      });
+
+      // The user moves notes/a.md to notes/moved.md.
+      final from = File(p.join(vault.path, 'notes', 'a.md'));
+      final to = File(p.join(vault.path, 'notes', 'moved.md'));
+      await to.writeAsString(await from.readAsString());
+      await from.delete();
+
+      await scanner.reindex();
+
+      final row =
+          await db.db.query('notes', where: 'id = ?', whereArgs: ['u-a']);
+      expect(row.single['path'], 'notes/moved.md',
+          reason: 'the row follows the note');
+      final aliases = await db.db.query('link_aliases');
+      expect(aliases, hasLength(1),
+          reason: 'the disambiguation the user made must survive the move');
+    });
+
+    test('a duplicate left at the old path is not a vacated path', () async {
+      // Two files carrying one uid: the index follows one of them, and the
+      // other is a duplicate. The note did not *leave* that path — and a
+      // tombstone there would tell the sync engine the file was deleted,
+      // so the server's copy of a file that is still on this disk would be
+      // deleted with it.
+      await writeNote('notes/b.md', 'body', uid: 'u-a', title: 'A');
+
+      final db = await openDb();
+      addTearDown(db.close);
+      final scanner = VaultScanner(database: db.db, fileStore: store);
+      await scanner.reindex();
+
+      // The user copies the note under another name.
+      final original = File(p.join(vault.path, 'notes', 'b.md'));
+      await File(p.join(vault.path, 'notes', 'a.md'))
+          .writeAsString(await original.readAsString());
+
+      await scanner.reindex();
+
+      final row =
+          await db.db.query('notes', where: 'id = ?', whereArgs: ['u-a']);
+      expect(row.single['path'], 'notes/a.md',
+          reason: 'the index follows the first path, the way it always has');
+      final left =
+          await db.db.query('notes', where: 'path = ?', whereArgs: ['notes/b.md']);
+      expect(left, isEmpty,
+          reason: 'a duplicate is not a note that left');
+    });
+
+    test('the path a note left behind is remembered as vacated', () async {
+      // The tombstone is what the sync engine reads as "this device no
+      // longer has a note here". Without it the round sees a file the server
+      // has and the device does not, and downloads the server's copy back
+      // over the moved note — the rename silently reverts.
+      await writeNote('notes/a.md', 'body', uid: 'u-a', title: 'A');
+
+      final db = await openDb();
+      addTearDown(db.close);
+      final scanner = VaultScanner(database: db.db, fileStore: store);
+      await scanner.reindex();
+
+      final from = File(p.join(vault.path, 'notes', 'a.md'));
+      final to = File(p.join(vault.path, 'notes', 'moved.md'));
+      await to.writeAsString(await from.readAsString());
+      await from.delete();
+
+      await scanner.reindex();
+
+      final row = await db.db.query('notes',
+          where: 'path = ?', whereArgs: ['notes/a.md']);
+      expect(row, hasLength(1));
+      expect(row.single['is_deleted'], 1);
+    });
+  });
+
   group('missing paths', () {
     test('an index row with no file is reported, never deleted', () async {
       await writeNote('notes/gone.md', 'body', uid: 'u-gone', title: 'Gone');

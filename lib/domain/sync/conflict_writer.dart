@@ -104,12 +104,8 @@ abstract final class ConflictWriter {
     final dir = Directory(p.join(conflictsRoot, name));
     await dir.create(recursive: true);
 
-    if (localBytes != null) {
-      await File(p.join(dir.path, localFile)).writeAsBytes(localBytes, flush: true);
-    }
-    if (remoteBytes != null) {
-      await File(p.join(dir.path, remoteFile)).writeAsBytes(remoteBytes, flush: true);
-    }
+    await _writeSide(dir, localFile, localBytes);
+    await _writeSide(dir, remoteFile, remoteBytes);
 
     final record = ConflictRecord(
       directory: name,
@@ -119,11 +115,91 @@ abstract final class ConflictWriter {
       hasRemote: remoteBytes != null,
       at: at ?? stamp.millisecondsSinceEpoch,
     );
+    await _writeMeta(dir, record);
+    return record;
+  }
+
+  /// Writes the two copies of a conflict into a directory that already exists.
+  ///
+  /// The same conflict is detected again while the first one is still waiting
+  /// on a person. Reusing the directory is what keeps `_conflicts/` from
+  /// growing by one set of files per round — but the bytes still have to be
+  /// refreshed, because the divergence itself moves on: the remote deletes
+  /// the note, the local edit changes again. Leaving the earlier copy in
+  /// place would mean the only copy of the user's newest edit is the file
+  /// the engine is about to delete, and the copy that does survive describes
+  /// a round that has already been superseded.
+  ///
+  /// A side that no longer exists in this round has its file removed. The
+  /// directory is a snapshot of the current divergence, and a `remote.md`
+  /// left over from a round where the remote still had the note would offer
+  /// the user a "remote" side for a note the remote has since deleted.
+  static Future<ConflictRecord> writeInto({
+    required String vaultRoot,
+    required String directoryName,
+    required String originalPath,
+    required List<int>? localBytes,
+    required List<int>? remoteBytes,
+    required ConflictSources sources,
+    required DateTime when,
+    int? at,
+  }) async {
+    final dir = Directory(
+        p.join(VaultPaths.conflictsRoot(vaultRoot), directoryName));
+    await dir.create(recursive: true);
+
+    await _writeSide(dir, localFile, localBytes);
+    await _writeSide(dir, remoteFile, remoteBytes);
+
+    final record = ConflictRecord(
+      directory: directoryName,
+      originalPath: originalPath,
+      sources: sources,
+      hasLocal: localBytes != null,
+      hasRemote: remoteBytes != null,
+      at: at ?? when.toUtc().millisecondsSinceEpoch,
+    );
+    await _writeMeta(dir, record);
+    return record;
+  }
+
+  /// Writes one side of the conflict, or removes the file when that side is
+  /// not part of this round's divergence.
+  ///
+  /// Bytes that are already on disk are left alone. A conflict that is
+  /// detected again unchanged would otherwise rewrite the same two files
+  /// every round, and a copy whose mtime keeps moving is harder to recognise
+  /// as "the copy you already have".
+  static Future<void> _writeSide(
+    Directory dir,
+    String name,
+    List<int>? bytes,
+  ) async {
+    final file = File(p.join(dir.path, name));
+    if (bytes == null) {
+      if (await file.exists()) await file.delete();
+      return;
+    }
+    if (await file.exists()) {
+      final current = await file.readAsBytes();
+      if (_sameBytes(current, bytes)) return;
+    }
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  static Future<void> _writeMeta(Directory dir, ConflictRecord record) async {
     await File(p.join(dir.path, metaFile)).writeAsString(
       '${const JsonEncoder.withIndent('  ').convert(_metaJson(record))}\n',
       flush: true,
     );
-    return record;
+  }
+
+  static bool _sameBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   static Map<String, Object?> _metaJson(ConflictRecord record) => {

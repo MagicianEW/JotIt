@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:sqflite/sqflite.dart' as sqflite;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'schema.dart';
@@ -24,13 +24,20 @@ class JotItDatabase {
   /// Minimum SQLite version that ships the `trigram` tokenizer (ADR-4).
   static const String minimumSqliteVersion = '3.34.0';
 
-  static Future<JotItDatabase> open({required String filePath}) async {
-    final factory = _factory();
-    final db = await factory.openDatabase(
+  /// Opens the vault's database.
+  ///
+  /// [factory] overrides the SQLite implementation. Tests pass
+  /// [testFactory] so the SQL runs on the calling isolate — see [testFactory]
+  /// for why that matters.
+  static Future<JotItDatabase> open({
+    required String filePath,
+    DatabaseFactory? factory,
+  }) async {
+    final db = await (factory ?? _factory()).openDatabase(
       filePath,
       options: OpenDatabaseOptions(
         singleInstance: true,
-        onConfigure: (d) => _applyPragmas(d),
+        onConfigure: (d) => applyPragmas(d),
       ),
     );
     final instance = JotItDatabase._(db);
@@ -47,7 +54,7 @@ class JotItDatabase {
       inMemoryDatabasePath,
       options: OpenDatabaseOptions(
         singleInstance: false,
-        onConfigure: (d) => _applyPragmas(d),
+        onConfigure: (d) => applyPragmas(d),
       ),
     );
     final instance = JotItDatabase._(db);
@@ -55,15 +62,34 @@ class JotItDatabase {
     return instance;
   }
 
-  /// Desktop platforms get the bundled FFI build, which is the only way to
-  /// guarantee the trigram tokenizer. Android's system SQLite has lagged far
-  /// enough behind that relying on it would silently disable CJK search.
+  /// Every platform gets the bundled FFI build.
+  ///
+  /// Android was the exception once, and it was the wrong exception: the
+  /// system SQLite on a phone has no FTS5 module, and the vault's search
+  /// table is built on it. The symptom was not a degraded search — it was a
+  /// vault that would not open at all, because creating the table failed
+  /// with "no such module: fts5" while the schema was being written.
+  ///
+  /// The bundled build is the one that has FTS5 and the trigram tokenizer
+  /// (ADR-4), and it is now the same build on every platform — so a vault
+  /// written on a phone is readable on a desktop, and the other way round.
+  ///
+  /// **The SQL runs on the calling isolate**, not on a background one. The
+  /// isolate-based factory is a trap in a test: the app is driven by a
+  /// harness whose fake async zone never lets that isolate's callbacks land,
+  /// so the first `pump()` after the database is opened waits for a future
+  /// that will not complete, and the test hangs instead of failing. Running
+  /// the SQL inline is also simply faster for a local file — the whole point
+  /// of the library is that it *is* SQLite, running it in-process.
   static DatabaseFactory _factory() {
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      sqfliteFfiInit();
-      return databaseFactoryFfi;
-    }
-    return sqflite.databaseFactory;
+    sqfliteFfiInit();
+    return databaseFactoryFfiNoIsolate;
+  }
+
+  /// The factory the tests use, for the same reason as [_factory].
+  static DatabaseFactory get testFactory {
+    sqfliteFfiInit();
+    return databaseFactoryFfiNoIsolate;
   }
 
   Future<void> close() => db.close();
@@ -92,14 +118,53 @@ class JotItDatabase {
     await db.rawQuery("SELECT 1 FROM notes_fts WHERE notes_fts MATCH 'x'");
   }
 
-  static Future<void> _applyPragmas(DatabaseExecutor db) async {
+  /// Applies the pragmas the vault relies on.
+  ///
+  /// Two rules, both learned the hard way on a phone:
+  ///
+  ///  * `journal_mode` is the one pragma that *answers with a row*, and
+  ///    Android's SQLite driver refuses to run a query through `execute` — it
+  ///    throws "Queries can be performed using SQLiteDatabase query or
+  ///    rawQuery methods only". Because this runs while the database is
+  ///    opening, that one line does not merely lose WAL: the whole vault
+  ///    fails to open and the app sits on a spinner forever. Ask for it the
+  ///    way it has to be asked.
+  ///  * None of these is worth failing an open over. They are tuning knobs
+  ///    and safety belts, and a database that cannot be tuned is still a
+  ///    database. A pragma that cannot be applied is reported and stepped
+  ///    over, never allowed to take the vault down with it.
+  @visibleForTesting
+  static Future<void> applyPragmas(DatabaseExecutor db) async {
     // WAL survives across connections, so re-issuing it is harmless and makes
     // a freshly attached database behave the same as the first one.
-    await db.execute('PRAGMA journal_mode = WAL');
-    await db.execute('PRAGMA synchronous = NORMAL');
-    await db.execute('PRAGMA foreign_keys = ON');
-    await db.execute('PRAGMA temp_store = MEMORY');
-    await db.execute('PRAGMA busy_timeout = $_busyTimeoutMs');
+    try {
+      await db.rawQuery('PRAGMA journal_mode = WAL');
+    } on Object catch (e) {
+      _reportPragma('journal_mode = WAL', e);
+    }
+
+    // The rest answer with nothing, so `execute` is the right call for them.
+    for (final String pragma in <String>[
+      'PRAGMA synchronous = NORMAL',
+      'PRAGMA foreign_keys = ON',
+      'PRAGMA temp_store = MEMORY',
+      'PRAGMA busy_timeout = $_busyTimeoutMs',
+    ]) {
+      try {
+        await db.execute(pragma);
+      } on Object catch (e) {
+        _reportPragma(pragma, e);
+      }
+    }
+  }
+
+  /// Says out loud that a pragma did not take.
+  ///
+  /// Not swallowed: a database running without `foreign_keys` is still a
+  /// database, but it is one whose guarantees differ, and whoever is looking
+  /// at a bug report later needs to know that.
+  static void _reportPragma(String pragma, Object error) {
+    stderr.writeln('JotIt: could not apply "$pragma": $error');
   }
 
   Future<void> ensureSchema() async {

@@ -217,12 +217,31 @@ class SyncEngine {
         }
       }
 
+      // P1-5: the short-circuit has to mean "there is genuinely nothing to
+      // do". `_hasUnsyncedAttachments` answers "is there work left?", so it
+      // enters the condition negated.
+      //
+      // The un-negated version was wrong in both directions at once: an
+      // entirely idle vault never short-circuited (every round paid for a
+      // full exchange), and — worse — a vault whose notes were all synced but
+      // which held one attachment with no base row *did* short-circuit, which
+      // is exactly the state a freshly pasted image sits in. The new
+      // attachment was shelved indefinitely: the server looked unchanged, the
+      // notes looked unchanged, and the one thing that had work to do was
+      // the very thing the condition was checking for.
+      //
+      // Negating it opened a second hole, which the pending-local-deletion
+      // check below closes: a file that is gone from this device but still
+      // on the server is work too, and the remote diff cannot see it.
+      final pendingLocalDeletion =
+          await _hasPendingLocalDeletion(base, localPaths.toSet());
       final nothingToDo =
           changes.isEmpty &&
               !backlog &&
               unsyncedLocal.isEmpty &&
               locallyEdited.isEmpty &&
-              _hasUnsyncedAttachments(localAttachments, base);
+              !_hasUnsyncedAttachments(localAttachments, base) &&
+              !pendingLocalDeletion;
       if (nothingToDo) {
         machine.apply(SyncEvent.queueEmpty);
         machine.apply(SyncEvent.backoffElapsed);
@@ -534,6 +553,35 @@ class SyncEngine {
     if (localAttachments.isEmpty) return false;
     final based = {for (final r in base) r.path};
     return localAttachments.any((p) => !based.contains(p));
+  }
+
+  /// True when a path the base remembers is gone from this device, so the
+  /// deletion still has to reach the server.
+  ///
+  /// A deleted file is invisible to the remote diff: the server still has it
+  /// and it still matches the base, so as far as the server is concerned
+  /// nothing moved. The only way to see this work is to compare what the
+  /// base remembers with what is on disk — without it the idle fast path
+  /// swallows the deletion and the file lives on the server forever, with
+  /// the user having no way to remove it.
+  ///
+  /// A note the index no longer lists as active was deleted here, and §5.3
+  /// rows 4 and 11 propagate that. An attachment is judged by the file
+  /// rather than by the index: §5.5 decides an attachment by whether it is
+  /// there, and a file that is still on disk but no longer referenced is
+  /// not a deletion.
+  Future<bool> _hasPendingLocalDeletion(
+      List<SyncMetaRecord> base, Set<String> liveNotes) async {
+    for (final r in base) {
+      if (liveNotes.contains(r.path)) continue;
+      if (VaultPaths.isAttachmentPath(r.path)) {
+        final file = files.fileFor(r.path);
+        if (file == null || !await file.exists()) return true;
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   /// §5.5. Everything about an immutable file that the note matrix must not be
@@ -975,13 +1023,7 @@ class SyncEngine {
       }
     }
 
-    final knownBasePath = remoteUid == null
-        ? null
-        : base
-            .where((r) =>
-                r.uid == remoteUid && r.path != path && !r.conflictState.isUnresolved)
-            .map((r) => r.path)
-            .firstOrNull;
+    final knownBasePath = _knownBasePathForUid(remoteUid, path, base);
 
     return SyncObservation(
       path: VaultPaths.stripNotesPrefix(path) ?? path,
@@ -1004,14 +1046,39 @@ class SyncEngine {
     );
   }
 
+  /// The base row a remote rename comes from: the row that recorded this uid
+  /// under a *different* path.
+  ///
+  /// Both sides of the comparison live in the same path space. `sync_meta`
+  /// keeps the `notes/` prefix in its paths while `SyncObservation.path` has
+  /// it removed, so comparing the two directly is never equal — the row for
+  /// the path itself was never excluded, and a rename could end up
+  /// "adopting" the path it is already on, leaving the old file behind
+  /// next to a second copy of the same note.
+  ///
+  /// Rows in an unresolved conflict are skipped on both sides of the engine:
+  /// their copy set is waiting on a person, so the note they point at is
+  /// not a rename source.
+  String? _knownBasePathForUid(
+      String? uid, String path, List<SyncMetaRecord> base) {
+    if (uid == null) return null;
+    final here = _pathKey(path);
+    for (final r in base) {
+      if (r.uid != uid) continue;
+      if (r.conflictState.isUnresolved) continue;
+      if (_pathKey(r.path) == here) continue;
+      return r.path;
+    }
+    return null;
+  }
+
+  /// A vault path as the engine compares paths: relative to the vault and
+  /// without the `notes/` prefix.
+  String _pathKey(String path) => VaultPaths.stripNotesPrefix(path) ?? path;
+
   String? _knownBasePathFor(
       SyncObservation observation, List<SyncMetaRecord> base) {
-    final uid = observation.remoteUid;
-    if (uid == null) return observation.knownBasePathForRemoteUid;
-    return base
-        .where((r) => r.uid == uid && r.path != observation.path)
-        .map((r) => r.path)
-        .firstOrNull;
+    return _knownBasePathForUid(observation.remoteUid, observation.path, base);
   }
 
   /// An existing `_conflicts/` directory for a conflict that is still waiting
@@ -1055,30 +1122,47 @@ class SyncEngine {
       // by one set of files per sync while the dialog sits unanswered —
       // and the path is still reported through the action switch below.
       final existingDir = await _pendingConflictDir(record, null);
-      if (existingDir == null) {
-        final remoteBytes = decision.preserveRemote ? await dav.get(path) : null;
-        final written = await ConflictWriter.write(
-          vaultRoot: vaultRoot,
-          originalPath: path,
-          localBytes: decision.preserveLocal ? localBytes : null,
-          remoteBytes: remoteBytes,
-          sources: ConflictSources(
-            localUid: record?.uid,
-            localHash: localBytes == null ? null : ContentHash.ofBytes(localBytes),
-            remoteEtag: remote?.etag,
-            remoteHash: remoteBytes == null ? null : ContentHash.ofBytes(remoteBytes),
-          ),
-          when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
-          at: nowMs,
-        );
-        await meta.markConflict(
-          syncRootId: syncRootId,
-          path: path,
-          state: ConflictState.pendingResolution,
-          copyDir: written.directory,
-          at: nowMs,
-        );
-      }
+      // The bytes are written into the reused directory rather than
+      // skipped. Skipping them was the bug: the divergence moves on while
+      // the first copy waits — the remote deletes the note, the local edit
+      // changes again — and then the copy on disk describes a round that has
+      // already been superseded, while the branch below deletes the file the
+      // newest edit lives in. Nothing else holds those bytes.
+      final remoteBytes = decision.preserveRemote ? await dav.get(path) : null;
+      final keptLocal = decision.preserveLocal ? localBytes : null;
+      final sources = ConflictSources(
+        localUid: record?.uid,
+        localHash: keptLocal == null ? null : ContentHash.ofBytes(keptLocal),
+        remoteEtag: remote?.etag,
+        remoteHash: remoteBytes == null ? null : ContentHash.ofBytes(remoteBytes),
+      );
+      final written = existingDir == null
+          ? await ConflictWriter.write(
+              vaultRoot: vaultRoot,
+              originalPath: path,
+              localBytes: keptLocal,
+              remoteBytes: remoteBytes,
+              sources: sources,
+              when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+              at: nowMs,
+            )
+          : await ConflictWriter.writeInto(
+              vaultRoot: vaultRoot,
+              directoryName: existingDir,
+              originalPath: path,
+              localBytes: keptLocal,
+              remoteBytes: remoteBytes,
+              sources: sources,
+              when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+              at: nowMs,
+            );
+      await meta.markConflict(
+        syncRootId: syncRootId,
+        path: path,
+        state: ConflictState.pendingResolution,
+        copyDir: written.directory,
+        at: nowMs,
+      );
     }
 
     switch (decision.action) {
@@ -1137,23 +1221,43 @@ class SyncEngine {
                   oldRecord.baseContentHash == null ||
                   ContentHash.ofBytes(localBytes) != oldRecord.baseContentHash)) {
             localBytesPreserved = true;
-            conflictDir ??= await _pendingConflictDir(record, oldRecord);
-            conflictDir ??= (await ConflictWriter.write(
-              vaultRoot: vaultRoot,
-              originalPath: knownBasePath,
-              localBytes: localBytes,
-              remoteBytes: null,
-              sources: ConflictSources(
-                localUid: oldRecord?.uid ?? observation.localUid,
-                localHash: ContentHash.ofBytes(localBytes),
-                remoteEtag: remote?.etag,
-                remoteHash: remoteHash,
-                remoteUid: observation.remoteUid,
-              ),
-              when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
-              at: nowMs,
-            ))
-                .directory;
+            // The copy of the local edit is refreshed even when a directory
+            // is being reused: the edit may have changed since the round
+            // that wrote it, and this is the only place those bytes exist.
+            final dir = conflictDir ?? await _pendingConflictDir(record, oldRecord);
+            final written = dir == null
+                ? await ConflictWriter.write(
+                    vaultRoot: vaultRoot,
+                    originalPath: knownBasePath,
+                    localBytes: localBytes,
+                    remoteBytes: null,
+                    sources: ConflictSources(
+                      localUid: oldRecord?.uid ?? observation.localUid,
+                      localHash: ContentHash.ofBytes(localBytes),
+                      remoteEtag: remote?.etag,
+                      remoteHash: remoteHash,
+                      remoteUid: observation.remoteUid,
+                    ),
+                    when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+                    at: nowMs,
+                  )
+                : await ConflictWriter.writeInto(
+                    vaultRoot: vaultRoot,
+                    directoryName: dir,
+                    originalPath: knownBasePath,
+                    localBytes: localBytes,
+                    remoteBytes: null,
+                    sources: ConflictSources(
+                      localUid: oldRecord?.uid ?? observation.localUid,
+                      localHash: ContentHash.ofBytes(localBytes),
+                      remoteEtag: remote?.etag,
+                      remoteHash: remoteHash,
+                      remoteUid: observation.remoteUid,
+                    ),
+                    when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+                    at: nowMs,
+                  );
+            conflictDir = written.directory;
           }
 
           // P0-3 (engine side): the rename below destroys whatever already
@@ -1166,23 +1270,49 @@ class SyncEngine {
           if (toHere != null) {
             final doomed = await toHere.readAsBytes();
             localBytesPreserved = true;
-            conflictDir ??= await _pendingConflictDir(record, null);
-            conflictDir ??= (await ConflictWriter.write(
-              vaultRoot: vaultRoot,
-              originalPath: path,
-              localBytes: doomed,
-              remoteBytes: null,
-              sources: ConflictSources(
-                localUid: observation.remoteUid ?? observation.localUid,
-                localHash: ContentHash.ofBytes(doomed),
-                remoteEtag: remote?.etag,
-                remoteHash: remoteHash,
-                remoteUid: observation.remoteUid,
-              ),
-              when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
-              at: nowMs,
-            ))
-                .directory;
+            // This is a *different* file from the local edit above, and one
+            // conflict directory holds one local side. When both copies exist
+            // in the same round the doomed file gets a directory of its own
+            // instead of overwriting the edit that was just preserved.
+            final pending = await _pendingConflictDir(record, null);
+            final dir =
+                (pending == null || pending == conflictDir) ? null : pending;
+            final written = dir == null
+                ? await ConflictWriter.write(
+                    vaultRoot: vaultRoot,
+                    originalPath: path,
+                    localBytes: doomed,
+                    remoteBytes: null,
+                    sources: ConflictSources(
+                      localUid: observation.remoteUid ?? observation.localUid,
+                      localHash: ContentHash.ofBytes(doomed),
+                      remoteEtag: remote?.etag,
+                      remoteHash: remoteHash,
+                      remoteUid: observation.remoteUid,
+                    ),
+                    when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+                    at: nowMs,
+                  )
+                : await ConflictWriter.writeInto(
+                    vaultRoot: vaultRoot,
+                    directoryName: dir,
+                    originalPath: path,
+                    localBytes: doomed,
+                    remoteBytes: null,
+                    sources: ConflictSources(
+                      localUid: observation.remoteUid ?? observation.localUid,
+                      localHash: ContentHash.ofBytes(doomed),
+                      remoteEtag: remote?.etag,
+                      remoteHash: remoteHash,
+                      remoteUid: observation.remoteUid,
+                    ),
+                    when: DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true),
+                    at: nowMs,
+                  );
+            // The base row records one directory. The other one is still on
+            // disk, and `ConflictWriter.pending` lists it like any other
+            // copy set — nothing is lost by the row naming only one.
+            conflictDir ??= written.directory;
           }
 
           if (to != null) await to.parent.create(recursive: true);

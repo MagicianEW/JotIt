@@ -801,6 +801,90 @@ class EditorPageState extends ConsumerState<EditorPage> {
   /// Every failure here says what went wrong, because the alternative — a
   /// button that does nothing when there is no note, or a refused path, or a
   /// missing plugin — is indistinguishable to the user from a broken app.
+  Future<void> insertFile(String sourcePath) async {
+    // P0-5: insert against the paired path, not whatever the open-note
+    // provider happens to say — during a jump the two disagree, and the copy
+    // would be filed under a note whose text is not on screen.
+    final notePath = _writablePath();
+    if (notePath == null) {
+      setState(() => _status = '先打开一篇可编辑的笔记，再插入附件');
+      return;
+    }
+
+    setState(() {
+      _attaching = true;
+      _status = '正在插入…';
+    });
+
+    try {
+      final session = await ref.read(vaultProvider.future);
+      final insertion = await session.insertAttachment(
+        notePath: notePath,
+        sourcePath: sourcePath,
+      );
+      if (!mounted) return;
+
+      // The copy is asynchronous: a wiki-link jump taken while it ran leaves
+      // the controller holding a *different* note than the one the attachment
+      // belongs to — the P0-5 pairing rule, checked again because time has
+      // passed. The copied file stays behind as an orphan, exactly as it does
+      // when the user simply never saves.
+      if (_writablePath() != notePath) {
+        setState(() {
+          _attaching = false;
+          _status = '笔记已经切换，这次插入没有链接进去';
+        });
+        return;
+      }
+
+      // The splice below edits the buffer by path and offset, so it needs the
+      // controller to hold the latest text: anything still on the rich pane's
+      // debounce is delivered first (P1-10), otherwise the insert would be
+      // layered over a stale buffer and the user's last burst rolled back.
+      _richPaneKey.currentState?.flush();
+
+      final spliced = AttachmentWriter.spliceInto(
+        _controller.text,
+        _focus.hasFocus ? _controller.selection.baseOffset : _controller.text.length,
+        insertion,
+      );
+      setState(() {
+        _controller.text = spliced;
+        // Put the caret after what was just inserted, so typing continues
+        // below the picture rather than in the middle of the link.
+        _controller.selection = TextSelection.collapsed(
+          offset: spliced.indexOf(insertion.markdown) + insertion.markdown.length,
+        );
+        _dirty = true;
+        _attaching = false;
+        if (_view == EditorView.rich && !_richAllowed) {
+          // An attachment link is `![[...]]` — wiki syntax the rich serialiser
+          // cannot round-trip, so the note may no longer be shown in rich
+          // mode. Leaving the user there would let the pane's next
+          // serialisation wipe the link that was just inserted (P1-11).
+          _view = EditorView.source;
+          _status = '附件链接暂不受富文本支持，已切回源码视图';
+        } else {
+          _status = '已插入 ${insertion.linkTarget}（${_humanSize(insertion.size)}），'
+              '保存后同步';
+        }
+      });
+      invalidateNotes(ref);
+    } on AttachmentRefused catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _attaching = false;
+        _status = '插入失败：${e.reason}';
+      });
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _attaching = false;
+        _status = '插入失败：$e';
+      });
+    }
+  }
+
   Future<void> _attachFile() async {
     // Same pairing rule as a save (P0-5): the copy is about to be referenced
     // from the text on screen, which only belongs to a note that is actually

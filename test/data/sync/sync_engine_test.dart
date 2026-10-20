@@ -38,6 +38,7 @@ void main() {
   late SyncMetaStore meta;
   late SyncRootStore roots;
   late SyncEngine engine;
+  late _CountingClient counter;
 
   const rootId = 'root-1';
   var now = 1000000;
@@ -66,8 +67,9 @@ void main() {
       username: 'testuser',
     ));
 
+    counter = _CountingClient(inner: dav.client());
     engine = SyncEngine(
-      dav: dav.client(),
+      dav: counter,
       files: files,
       notes: notes,
       meta: meta,
@@ -179,6 +181,51 @@ void main() {
       expect(second.downloaded, isEmpty);
       expect(second.isEmpty, isTrue);
     });
+
+  group('the idle round (P1-5)', () {
+    // The short-circuit has to mean "there is genuinely nothing to do". The
+    // condition it used was "is there work left?" — used un-negated, which
+    // got both directions wrong at once: an idle vault never took the fast
+    // path (every round asked the server for every file again), and a vault
+    // holding one unuploaded attachment took it (the attachment was shelved
+    // forever, which is exactly the state a freshly pasted image is in).
+
+    test('an idle vault does not read the files again', () async {
+      await writeLocal('notes/a.md', 'body', uid: 'u-a', title: 'A');
+      await run();
+
+      counter.gets = 0;
+      final second = await run();
+
+      expect(second.error, isNull);
+      expect(counter.gets, 0,
+          reason: 'nothing moved, so the round must not fetch every file to '
+              'learn what it already knew');
+    });
+
+    test('an attachment that has never been synced is not shelved', () async {
+      // The state a freshly pasted image sits in: every note is in sync and
+      // one attachment has no base row yet. The round used to read that as
+      // "there is nothing to do" — the very thing it was checking for.
+      await writeLocal('notes/a.md', '![[attachments/pic.png]]',
+          uid: 'u-a', title: 'A');
+      await run();
+      expect(await dav.remoteExists('notes/attachments/pic.png'), isFalse);
+
+      // The picture arrives on disk.
+      final pic = File(p.join(vault.path, 'notes', 'attachments', 'pic.png'));
+      pic.parent.createSync(recursive: true);
+      pic.writeAsBytesSync(_png);
+      await rescan();
+
+      final result = await run();
+
+      expect(result.error, isNull);
+      expect(await dav.remoteExists('notes/attachments/pic.png'), isTrue,
+          reason: 'the attachment is the only thing with work to do, and the '
+              'short-circuit must not swallow it');
+    });
+  });
 
     test('pulls a remote note this device has never seen', () async {
       await dav.seedRemote('notes/remote.md',
@@ -560,6 +607,47 @@ void main() {
       expect(await readLocal('notes/a.md'), isNot(contains('CONFLICT')));
     });
 
+    test('a new conflict on top of a pending one still keeps the bytes',
+        () async {
+      // P1-7: a conflict that is already waiting on a person does not earn
+      // a second copy directory every round — but the bytes still have to be
+      // written. The divergence moves on while the first copy waits: the
+      // remote deletes the note and the local edit changes again. The
+      // branch that follows deletes the local file, so the newest edit has
+      // nowhere else to be — the copy that is already on disk describes a
+      // round that has been superseded.
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'remote v1')));
+      await run();
+
+      // A genuine conflict: both sides changed.
+      await writeLocal('notes/a.md', 'local v2', uid: 'u-a', title: 'A');
+      await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'remote v2')));
+      await run();
+      final dirs = ConflictWriter.pending(vault.path);
+      expect(dirs, hasLength(1));
+      expect(
+        utf8.decode((await _side(vault.path, dirs.single, 'local.md'))!),
+        contains('local v2'),
+      );
+
+      // The divergence moves on: the remote deletes the note, and the local
+      // edit changes again.
+      await writeLocal('notes/a.md', 'local v3', uid: 'u-a', title: 'A');
+      await dav.removeRemote('notes/a.md');
+
+      await run();
+
+      final after = ConflictWriter.pending(vault.path);
+      expect(after, hasLength(1),
+          reason: 'a conflict waiting on a person does not earn a new copy '
+              'directory every round');
+      final local = await _side(vault.path, after.single, 'local.md');
+      expect(local, isNotNull);
+      expect(utf8.decode(local!), contains('local v3'),
+          reason: 'the newest edit has to be in the copy — the local file is '
+              'about to be deleted, and the earlier copy is a round old');
+    });
+
     test('the conflict is flagged for the user, not auto-resolved', () async {
       await dav.seedRemote('notes/a.md', utf8.encode(note('u-a', 'A', 'remote v1')));
       await run();
@@ -761,6 +849,92 @@ void main() {
           await _side(vault.path, dirs.single, 'local.md');
       expect(preserved, isNotNull);
       expect(utf8.decode(preserved!), contains('my unsynced edit'));
+    });
+  });
+
+  group('a rename made outside the app (P1-6)', () {
+    // The file manager is the only rename path this app has: there is no
+    // rename entry point, so a note that is moved on disk is a note that
+    // changed path and kept its identity.
+    //
+    // The bug this pins down: the reindex used to delete the old index row
+    // outright. The sync round then read "the server has this file and this
+    // device does not" and downloaded the server's old copy back over the
+    // moved note — the rename silently reverted, the note went back to the
+    // content it had before the move, and the edited version was not
+    // visible in the app any more.
+
+    /// Moves a file the way a file manager does: the bytes go with it.
+    Future<void> moveOnDisk(String from, String to) async {
+      final source = File(p.join(vault.path, p.joinAll(from.split('/'))));
+      final target = File(p.join(vault.path, p.joinAll(to.split('/'))));
+      await target.parent.create(recursive: true);
+      await source.rename(target.path);
+    }
+
+    test('the moved note reaches the server and the old copy is not restored',
+        () async {
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      expect(await readLocal('notes/old.md'), contains('v1'));
+      // The index has to know the note before it moves: the engine's
+      // download writes the file and the base, and the index follows on the
+      // next pass — which is exactly when the app is running.
+      await rescan();
+
+      // The user moves the file in the file manager and edits it there.
+      await moveOnDisk('notes/old.md', 'notes/new.md');
+      await files.writeAtomic(
+          'notes/new.md', utf8.encode(note('u-a', 'A', 'v2 edited locally')));
+      await rescan();
+
+      final result = await run();
+
+      expect(result.error, isNull);
+      expect(await files.readBytesIfPresent('notes/old.md'), isNull,
+          reason: 'the server copy must not be downloaded back over the moved '
+              'note — that is what silently undid the rename');
+      expect(await readLocal('notes/new.md'), contains('v2 edited locally'),
+          reason: 'the edit made after the move is the note');
+      expect(await dav.remoteExists('notes/old.md'), isFalse,
+          reason: 'the rename has to reach the server, not just this device');
+      final remote = await dav.readRemote('notes/new.md');
+      expect(remote, isNotNull);
+      expect(utf8.decode(remote!), contains('v2 edited locally'));
+    });
+
+    test('a moved note keeps its identity in the index', () async {
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await rescan();
+
+      await moveOnDisk('notes/old.md', 'notes/new.md');
+      await rescan();
+
+      final moved = await notes.byUid('u-a');
+      expect(moved, isNotNull);
+      expect(moved!.path, 'notes/new.md',
+          reason: 'the identity lives in the front matter, the path does not');
+      expect(moved.isDeleted, isFalse);
+      expect(await notes.byPath('notes/old.md'), isNull,
+          reason: 'the old path is not the note any more');
+    });
+
+    test('the old path is remembered as vacated, so the server copy goes',
+        () async {
+      await dav.seedRemote('notes/old.md', utf8.encode(note('u-a', 'A', 'v1')));
+      await run();
+      await rescan();
+
+      await moveOnDisk('notes/old.md', 'notes/new.md');
+      await rescan();
+
+      // The tombstone is what the sync engine reads as "this device no
+      // longer has a note here". Without it the round sees a file the
+      // server has and the device does not, and downloads it back.
+      final tombstone = await notes.byPath('notes/old.md', includeDeleted: true);
+      expect(tombstone, isNotNull);
+      expect(tombstone!.isDeleted, isTrue);
     });
   });
 
@@ -1220,3 +1394,104 @@ Future<List<int>?> _side(String vaultRoot, String dir, String name) async {
   final f = File(p.join(VaultPaths.conflictsRoot(vaultRoot), dir, name));
   return await f.exists() ? f.readAsBytes() : null;
 }
+
+/// Counts the file reads the engine makes.
+///
+/// The idle round is a *cost* question as much as a correctness one: a
+/// vault where nothing changed should not ask the server for every file
+/// again. The number of GETs is the only honest witness.
+class _CountingClient extends DavClient {
+  _CountingClient({required DavClient inner})
+      : _inner = inner,
+        super(
+          baseUri: inner.baseUri,
+          username: inner.username,
+          password: inner.password,
+          capabilities: inner.capabilities,
+        );
+
+  final DavClient _inner;
+
+  /// How many files were read since the counter was last cleared.
+  int gets = 0;
+
+  @override
+  Future<List<int>?> get(String path, {int? expectedLength}) {
+    gets++;
+    return _inner.get(path, expectedLength: expectedLength);
+  }
+
+  @override
+  Future<DavListing> propfind(String path, {int depth = 1}) =>
+      _inner.propfind(path, depth: depth);
+
+  @override
+  Future<DavResource?> stat(String path) => _inner.stat(path);
+
+  @override
+  Future<DavListing?> listCollection(String path) =>
+      _inner.listCollection(path);
+
+  @override
+  Future<DavPutResult> put(
+    String path,
+    List<int> bytes, {
+    DavCondition condition = const DavUnconditional(),
+    String contentType = 'text/markdown; charset=utf-8',
+  }) =>
+      _inner.put(path, bytes, condition: condition, contentType: contentType);
+
+  @override
+  Future<DavPutResult> putStream(
+    String path,
+    Stream<List<int>> content, {
+    required int contentLength,
+    String contentType = 'application/octet-stream',
+    DavCondition condition = const DavUnconditional(),
+    void Function(int sent)? onProgress,
+    Duration? timeoutOverride,
+  }) =>
+      _inner.putStream(
+        path,
+        content,
+        contentLength: contentLength,
+        contentType: contentType,
+        condition: condition,
+        onProgress: onProgress,
+        timeoutOverride: timeoutOverride,
+      );
+
+  @override
+  Future<void> ensureCollection(String collectionPath) =>
+      _inner.ensureCollection(collectionPath);
+
+  @override
+  Future<bool> delete(String path, {String? ifMatch}) =>
+      _inner.delete(path, ifMatch: ifMatch);
+
+  @override
+  Future<void> move(String fromPath, String toPath, {bool overwrite = false}) =>
+      _inner.move(fromPath, toPath, overwrite: overwrite);
+
+  @override
+  Future<DavCapabilities> probe() => _inner.probe();
+
+  @override
+  Future<void> close() => _inner.close();
+}
+
+/// A real 1×1 PNG. The bytes matter: an attachment that happens to be valid
+/// UTF-8 would take the note path through the parser and hide what is being
+/// tested here.
+const List<int> _png = <int>[
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
+  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+  0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+  0x54, 0x78, 0x9C, 0x63, 0xFC, 0xCF, 0xC0, 0x50,
+  0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9,
+  0x8C, 0x21, 0x33, 0x2C, 0x1D, 0x00, 0x00, 0x00,
+  0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60,
+  0x82,
+];

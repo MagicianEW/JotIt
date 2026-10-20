@@ -47,6 +47,29 @@ void main() {
         reason: 'one note, one row — not a ghost at the old path');
   });
 
+  test('a move keeps the disambiguations the user made for the note',
+      () async {
+    // P1-6: the aliases are the user's own decisions, and they hang off the
+    // note's id. Deleting the row to re-create it at the new path cascades
+    // the aliases away — silent, permanent loss, caused by nothing more than
+    // moving a file in the file manager.
+    await dao.upsert(record('u-1', 'notes/a.md'));
+    await dao.upsert(record('u-2', 'notes/b.md'));
+    await jdb.db.insert('link_aliases', <String, Object?>{
+      'source_note_id': 'u-1',
+      'alias': '同名',
+      'target_note_id': 'u-2',
+    });
+
+    await dao.upsert(record('u-1', 'notes/new.md'));
+
+    final aliases = await jdb.db.query('link_aliases');
+    expect(aliases, hasLength(1),
+        reason: 'the disambiguation must survive the move');
+    expect(aliases.single['source_note_id'], 'u-1');
+    expect(aliases.single['target_note_id'], 'u-2');
+  });
+
   test('a row whose uid changed under the same path is replaced', () async {
     await dao.upsert(record('u-1', 'notes/a.md'));
     await dao.upsert(record('u-2', 'notes/a.md'));

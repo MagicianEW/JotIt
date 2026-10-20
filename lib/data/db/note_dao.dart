@@ -131,7 +131,14 @@ class NoteDao {
 
       // The mirror image: the same note (same uid) living at another path.
       // Without this the insert-ignore below swallows the new path forever.
-      await txn.delete('notes',
+      //
+      // The row is *moved*, not deleted and re-created. A delete cascades
+      // through `links`, `link_aliases` and `note_tags`, and the aliases are
+      // the user's own disambiguation decisions — losing them because a file
+      // was moved in the file manager is silent, permanent data loss. The
+      // delete above has already freed this path, so the update cannot meet
+      // the unique constraint.
+      await txn.update('notes', {'path': record.path},
           where: 'id = ? AND path != ?', whereArgs: [record.uid, record.path]);
 
       // INSERT OR IGNORE + UPDATE rather than INSERT OR REPLACE: replace
@@ -146,6 +153,57 @@ class NoteDao {
     final db = _db;
     if (db == null) return body(_root);
     await db.transaction(body);
+  }
+
+  /// Moves the row of [uid] to [path].
+  ///
+  /// The identity stays; only the path changes. Nothing that references the
+  /// note by id is touched, which is the whole point: a note that moved
+  /// keeps its links, its tags and the disambiguations the user made for
+  /// it.
+  Future<void> moveTo({required String uid, required String path}) async {
+    await _root.update('notes', {'path': path},
+        where: 'id = ?', whereArgs: [uid]);
+  }
+
+  /// Leaves a tombstone at [path] for the note that used to live there.
+  ///
+  /// The tombstone is what tells the sync engine that this device no longer
+  /// has a note at that path. Without it the engine reads the round as "the
+  /// server has this file and this device does not", downloads the server's
+  /// copy back over the new note, and the rename silently reverts — the note
+  /// goes back to the content it had before the move, and the edited version
+  /// is not visible in the app any more.
+  ///
+  /// The tombstone cannot carry the note's own uid: the live row already
+  /// owns it, and `notes.id` is the primary key. It gets an id of its own
+  /// instead. Because the row is soft-deleted it stays out of the note list,
+  /// the link index, the alias table and the search results — it is a marker
+  /// for the sync engine, not a note.
+  Future<void> leaveTombstone({
+    required String path,
+    required String uid,
+    required int at,
+  }) async {
+    await _root.insert(
+      'notes',
+      <String, Object?>{
+        'id': 'moved:$uid@$path',
+        'path': path,
+        'title': '',
+        'body': '',
+        'content_hash': null,
+        'file_size': 0,
+        'file_mtime_ms': null,
+        'updated_at': at,
+        'synced_at': null,
+        'is_deleted': 1,
+        'deleted_at': at,
+      },
+      // Ignored rather than fatal: a tombstone is a marker, and a marker
+      // that cannot be placed must not abort the reindex that placed it.
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   Future<void> softDelete(String path, {required int at}) async {
@@ -191,6 +249,38 @@ class NoteDao {
         orderBy: 'path',
         limit: limit,
         offset: offset);
+    return [for (final r in rows) NoteRecord.fromRow(r)];
+  }
+
+  /// The path every indexed identity lives at, by uid.
+  ///
+  /// One query for the whole table. The reindex asks this for every note it
+  /// is about to write, and asking one question per note turns a single scan
+  /// into a thousand round trips.
+  Future<Map<String, String>> pathsByUid() async {
+    final rows = await _root.query('notes', columns: <String>['id', 'path']);
+    return <String, String>{
+      for (final r in rows) r['id']! as String: r['path']! as String,
+    };
+  }
+
+  /// The active notes, with their bodies cut short.
+  ///
+  /// The shelf shows one line of each note, so the list needs a handful of
+  /// characters of body and nothing more. Carrying the full text of 500
+  /// notes across the platform channel to render 500 one-line excerpts is
+  /// the kind of cost that shows up as a slow start, and the whole body is
+  /// one query away for anything that really needs it.
+  Future<List<NoteRecord>> allActiveExcerpts({
+    int limit = 10000,
+    int excerptChars = 200,
+  }) async {
+    final rows = await _root.rawQuery(
+      'SELECT id, path, title, SUBSTR(body, 1, ?) AS body, content_hash, '
+      'file_size, file_mtime_ms, updated_at, synced_at, is_deleted, '
+      'deleted_at FROM notes WHERE is_deleted = 0 ORDER BY path LIMIT ?',
+      <Object?>[excerptChars, limit],
+    );
     return [for (final r in rows) NoteRecord.fromRow(r)];
   }
 
